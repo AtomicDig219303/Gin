@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Permission required to define voice triggers on Google Glass -->
+    <uses-permission android:name="com.google.android.glass.permission.DEVELOPMENT" />
+    <uses-permission android:name="android.permission.BLUETOOTH" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@android:drawable/sym_def_app_icon"
+        android:label="@string/app_name"
+        android:theme="@style/GlassTheme">
+
+        <!-- Voice Query Activity -->
+        <activity
+            android:name=".VoiceActivity"
+            android:icon="@android:drawable/sym_def_app_icon"
+            android:label="Voice Assistant"
+            android:enabled="true"
+            android:exported="true">
+            
+            <intent-filter>
+                <action android:name="com.google.android.glass.action.VOICE_TRIGGER" />
+            </intent-filter>
+
+            <meta-data
+                android:name="com.google.android.glass.VoiceTrigger"
+                android:resource="@xml/voice_trigger_voice" />
+        </activity>
+
+        <!-- Camera Capture Activity -->
+        <activity
+            android:name=".CameraActivity"
+            android:icon="@android:drawable/sym_def_app_icon"
+            android:label="Visual Assistant"
+            android:enabled="true"
+            android:exported="true">
+            
+            <intent-filter>
+                <action android:name="com.google.android.glass.action.VOICE_TRIGGER" />
+            </intent-filter>
+
+            <meta-data
+                android:name="com.google.android.glass.VoiceTrigger"
+                android:resource="@xml/voice_trigger_camera" />
+        </activity>
+
+    </application>
+
+</manifest>
