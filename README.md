@@ -50,7 +50,7 @@ The phone app is both the server and the config panel.
 
 - **Transport mode:** Bluetooth Classic (RFCOMM) or BLE. BLE is pretty buggy right now and basically doesn't work reliably, so stick with RFCOMM if you want things to actually run smooth.
 - **API keys:** Gemini, OpenAI, Anthropic, plus a custom base URL if you're running something self-hosted (LocalAI, Ollama, vLLM, whatever... as long as it's OpenAI API compatible it'll work).
-- **System prompt:** injected into every query. Default is `"You are an AI assistant on Google Glass. Keep responses very short, concise, and direct (max 2 sentences). Don't fear going into details if the user has explicitly asked for it." Keeping responses short and concise helps improving the UX on Glass, keep this in mind if you decide to modify the default prompt.
+- **System prompt:** injected into every query. Default is "You are an AI assistant on Google Glass. Keep responses very short, concise, and direct (max 2 sentences). Don't fear going into details if the user has explicitly asked for it." Keeping responses short and concise helps improving the UX on Glass, keep this in mind if you decide to modify the default prompt.
 - **Chat Mode / Quick Mode:** Chat Mode keeps a rolling context of 40 messages (20 of your requests, audio or image, plus 20 model responses), Quick Mode wipes it after every request.
 
 ### Model presets (1 to 3)
