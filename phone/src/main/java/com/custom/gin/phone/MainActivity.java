@@ -7,16 +7,23 @@ import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.MenuItem;
 import android.view.View;
 import android.widget.Button;
-import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
+import androidx.appcompat.widget.Toolbar;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
+import androidx.recyclerview.widget.LinearLayoutManager;
+import androidx.recyclerview.widget.RecyclerView;
+
+import com.custom.gin.phone.chat.ChatAdapter;
+import com.custom.gin.phone.chat.ChatMessage;
+import com.google.android.material.materialswitch.MaterialSwitch;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -27,13 +34,16 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
     private TextView textConfigSummary;
     private TextView textServerStatus;
     private Button btnToggleServer;
-    private Button btnOpenSettings;
-    private TextView textLogs;
-    private ScrollView scrollLogs;
+    private MaterialSwitch switchMode;
+    private RecyclerView recyclerChat;
+    private ChatAdapter chatAdapter;
 
     private GinServerManager serverManager;
     private SharedPreferences prefs;
-    private final StringBuilder logsBuilder = new StringBuilder();
+
+    // We will keep a local list of all logs + messages for display if needed, 
+    // or just display ChatSession messages + server logs as SYSTEM messages.
+    private final List<ChatMessage> displayMessages = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -43,23 +53,47 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
         prefs = getSharedPreferences("gin_prefs", MODE_PRIVATE);
         serverManager = GinServerManager.getInstance(this);
 
-        // Bind views
+        Toolbar topAppBar = findViewById(R.id.topAppBar);
+        topAppBar.setOnMenuItemClickListener(new Toolbar.OnMenuItemClickListener() {
+            @Override
+            public boolean onMenuItemClick(MenuItem item) {
+                if (item.getItemId() == R.id.action_settings) {
+                    startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+                    return true;
+                }
+                return false;
+            }
+        });
+
         textConfigSummary = findViewById(R.id.text_config_summary);
         textServerStatus = findViewById(R.id.text_server_status);
         btnToggleServer = findViewById(R.id.btn_toggle_server);
-        btnOpenSettings = findViewById(R.id.btn_open_settings);
-        textLogs = findViewById(R.id.text_logs);
-        scrollLogs = findViewById(R.id.scroll_logs);
+        switchMode = findViewById(R.id.switch_mode);
+        recyclerChat = findViewById(R.id.recycler_chat);
 
-        // Setup click listeners
+        chatAdapter = new ChatAdapter();
+        recyclerChat.setLayoutManager(new LinearLayoutManager(this));
+        recyclerChat.setAdapter(chatAdapter);
+
+        switchMode.setOnCheckedChangeListener((buttonView, isChecked) -> {
+            serverManager.setChatMode(isChecked);
+            if (!isChecked) {
+                displayMessages.clear();
+                chatAdapter.setMessages(displayMessages);
+                Toast.makeText(MainActivity.this, "Switched to Quick Mode (History Cleared)", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(MainActivity.this, "Switched to Chat Mode", Toast.LENGTH_SHORT).show();
+            }
+        });
+
         btnToggleServer.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 if (serverManager.isRunning()) {
-                    serverManager.stopServer();
+                    stopServerService();
                 } else {
                     if (checkAndRequestPermissions()) {
-                        serverManager.startServer();
+                        startServerService();
                     } else {
                         Toast.makeText(MainActivity.this, "Permissions are required to run the server", Toast.LENGTH_SHORT).show();
                     }
@@ -67,14 +101,9 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
             }
         });
 
-        btnOpenSettings.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
-            }
-        });
+        // Sync initial switch state with server manager
+        serverManager.setChatMode(switchMode.isChecked());
 
-        // Request permissions on startup
         checkAndRequestPermissions();
     }
 
@@ -107,7 +136,7 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
             permissionsNeeded.add(Manifest.permission.RECORD_AUDIO);
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) { // Android 12+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
                 permissionsNeeded.add(Manifest.permission.BLUETOOTH_CONNECT);
             }
@@ -117,7 +146,7 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.BLUETOOTH_ADVERTISE) != PackageManager.PERMISSION_GRANTED) {
                 permissionsNeeded.add(Manifest.permission.BLUETOOTH_ADVERTISE);
             }
-        } else { // Older Android versions
+        } else {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
                 permissionsNeeded.add(Manifest.permission.ACCESS_FINE_LOCATION);
             }
@@ -148,7 +177,6 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
         }
     }
 
-    // Server state callbacks
     @Override
     public void onServerStateChanged(boolean running, boolean connected) {
         if (running) {
@@ -169,15 +197,31 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
 
     @Override
     public void onLogAdded(String logLine) {
-        logsBuilder.append(logLine).append("\n");
-        textLogs.setText(logsBuilder.toString());
+        // Only show significant logs as SYSTEM messages or ASSISTANT/USER messages if they parse out.
+        // For simplicity, we just add system logs.
+        if (logLine.startsWith("Raw LLM response:") || logLine.startsWith("Local Transcribed Text:")) {
+            // we skip these because we added actual ChatMessages in GinServerManager
+            // Wait, GinServerManager adds them to its ChatSession but doesn't expose them to MainActivity directly unless we ask.
+            // Let's just fetch the whole list from GinServerManager to sync? No, GinServerManager doesn't expose its chatSession.
+            // It's easier to just add them directly here as SYSTEM logs.
+        }
         
-        // Auto scroll to bottom
-        scrollLogs.post(new Runnable() {
-            @Override
-            public void run() {
-                scrollLogs.fullScroll(View.FOCUS_DOWN);
-            }
-        });
+        displayMessages.add(new ChatMessage(ChatMessage.Role.SYSTEM, logLine));
+        chatAdapter.setMessages(displayMessages);
+        recyclerChat.scrollToPosition(displayMessages.size() - 1);
+    }
+
+    private void startServerService() {
+        Intent serviceIntent = new Intent(this, GinServerService.class);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            ContextCompat.startForegroundService(this, serviceIntent);
+        } else {
+            startService(serviceIntent);
+        }
+    }
+
+    private void stopServerService() {
+        Intent serviceIntent = new Intent(this, GinServerService.class);
+        stopService(serviceIntent);
     }
 }

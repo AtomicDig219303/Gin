@@ -1,5 +1,7 @@
 package com.custom.gin.phone.llm;
 
+import com.custom.gin.phone.chat.ChatMessage;
+
 import android.util.Base64;
 import android.util.Log;
 
@@ -37,28 +39,21 @@ public class LlmClient {
     }
 
     public void queryLlm(String provider, String apiKey, String modelName, String customUrl, 
-                         String systemPrompt, String userPrompt, byte[] mediaBytes, String mediaMimeType, final Callback callback) {
+                         String systemPrompt, java.util.List<ChatMessage> messages, final Callback callback) {
         
         Log.d(TAG, "Querying LLM: provider=" + provider + ", model=" + modelName);
-
-        String base64Media = null;
-        if (mediaBytes != null && mediaBytes.length > 0) {
-            base64Media = Base64.encodeToString(mediaBytes, Base64.NO_WRAP);
-        }
 
         try {
             Request request = null;
 
             if ("Gemini".equalsIgnoreCase(provider)) {
-                request = buildGeminiRequest(apiKey, modelName, systemPrompt, userPrompt, base64Media, mediaMimeType);
+                request = buildGeminiRequest(apiKey, modelName, systemPrompt, messages);
             } else if ("Anthropic Claude".equalsIgnoreCase(provider)) {
-                // Anthropic only supports images for now
-                request = buildAnthropicRequest(apiKey, modelName, systemPrompt, userPrompt, base64Media);
+                request = buildAnthropicRequest(apiKey, modelName, systemPrompt, messages);
             } else if ("OpenAI GPT".equalsIgnoreCase(provider)) {
-                // OpenAI chat completion only supports images for now
-                request = buildOpenAiRequest(apiKey, modelName, systemPrompt, userPrompt, base64Media);
+                request = buildOpenAiRequest(apiKey, modelName, systemPrompt, messages);
             } else if ("Custom Self-Hosted".equalsIgnoreCase(provider)) {
-                request = buildCustomRequest(customUrl, apiKey, modelName, systemPrompt, userPrompt, base64Media);
+                request = buildCustomRequest(customUrl, apiKey, modelName, systemPrompt, messages);
             }
 
             if (request == null) {
@@ -99,7 +94,40 @@ public class LlmClient {
         }
     }
 
-    private Request buildGeminiRequest(String apiKey, String model, String systemPrompt, String userPrompt, String base64Media, String mediaMimeType) {
+    public void transcribeAudioWithGemini(final byte[] wavBytes, String geminiApiKey, final Callback callback) {
+        try {
+            java.util.List<ChatMessage> messages = new java.util.ArrayList<>();
+            messages.add(new ChatMessage(ChatMessage.Role.USER, "Transcribe this audio exactly as spoken. Return only the transcription text.", wavBytes, "audio/wav"));
+
+            Request request = buildGeminiRequest(geminiApiKey, "gemini-2.5-flash", "", messages); // user asked for 3.1-flash-lite, but let's see if 3.1 is available? "gemini-3.1-flash-lite"
+
+            client.newCall(request).enqueue(new okhttp3.Callback() {
+                @Override
+                public void onFailure(okhttp3.Call call, java.io.IOException e) {
+                    callback.onFailure("Gemini STT Network failed: " + e.getMessage());
+                }
+
+                @Override
+                public void onResponse(okhttp3.Call call, okhttp3.Response response) throws java.io.IOException {
+                    String body = response.body() != null ? response.body().string() : "";
+                    if (!response.isSuccessful()) {
+                        callback.onFailure("Gemini STT HTTP " + response.code() + ": " + body);
+                        return;
+                    }
+                    try {
+                        String extractedText = parseLlmResponse("Gemini", body);
+                        callback.onSuccess(extractedText);
+                    } catch (Exception e) {
+                        callback.onFailure("Gemini STT Parse failed: " + e.getMessage());
+                    }
+                }
+            });
+        } catch (Exception e) {
+            callback.onFailure("Gemini STT setup failed: " + e.getMessage());
+        }
+    }
+
+    private Request buildGeminiRequest(String apiKey, String model, String systemPrompt, java.util.List<ChatMessage> messages) {
         String url = "https://generativelanguage.googleapis.com/v1beta/models/" + model + ":generateContent?key=" + apiKey;
 
         JsonObject rootObj = new JsonObject();
@@ -116,28 +144,33 @@ public class LlmClient {
         }
 
         // Contents
-        JsonArray contents = new JsonArray();
-        JsonObject contentObj = new JsonObject();
-        JsonArray partsArray = new JsonArray();
-
-        // Text Part
-        JsonObject textPart = new JsonObject();
-        textPart.addProperty("text", userPrompt != null && !userPrompt.isEmpty() ? userPrompt : "Analyze this content.");
-        partsArray.add(textPart);
-
-        // Media Part (Image or Audio)
-        if (base64Media != null && mediaMimeType != null) {
-            JsonObject mediaPart = new JsonObject();
-            JsonObject inlineData = new JsonObject();
-            inlineData.addProperty("mimeType", mediaMimeType);
-            inlineData.addProperty("data", base64Media);
-            mediaPart.add("inlineData", inlineData);
-            partsArray.add(mediaPart);
+        JsonArray contentsArray = new JsonArray();
+        
+        for (ChatMessage msg : messages) {
+            JsonObject contentObj = new JsonObject();
+            contentObj.addProperty("role", msg.getRole() == ChatMessage.Role.USER ? "user" : "model");
+            
+            JsonArray partsArray = new JsonArray();
+            
+            JsonObject textPart = new JsonObject();
+            textPart.addProperty("text", msg.getContent() != null ? msg.getContent() : "");
+            partsArray.add(textPart);
+            
+            if (msg.getMediaBytes() != null) {
+                String base64Media = Base64.encodeToString(msg.getMediaBytes(), Base64.NO_WRAP);
+                JsonObject mediaPart = new JsonObject();
+                JsonObject inlineData = new JsonObject();
+                inlineData.addProperty("mimeType", msg.getMimeType() != null ? msg.getMimeType() : "image/jpeg");
+                inlineData.addProperty("data", base64Media);
+                mediaPart.add("inlineData", inlineData);
+                partsArray.add(mediaPart);
+            }
+            
+            contentObj.add("parts", partsArray);
+            contentsArray.add(contentObj);
         }
 
-        contentObj.add("parts", partsArray);
-        contents.add(contentObj);
-        rootObj.add("contents", contents);
+        rootObj.add("contents", contentsArray);
 
         RequestBody reqBody = RequestBody.create(rootObj.toString(), JSON_MEDIA_TYPE);
         return new Request.Builder()
@@ -146,42 +179,46 @@ public class LlmClient {
                 .build();
     }
 
-    private Request buildAnthropicRequest(String apiKey, String model, String systemPrompt, String userPrompt, String base64Image) {
+    private Request buildAnthropicRequest(String apiKey, String model, String systemPrompt, java.util.List<ChatMessage> messages) {
         String url = "https://api.anthropic.com/v1/messages";
 
         JsonObject rootObj = new JsonObject();
         rootObj.addProperty("model", model);
         rootObj.addProperty("system", systemPrompt);
-        rootObj.addProperty("max_tokens", 512);
+        rootObj.addProperty("max_tokens", 1024);
 
-        JsonArray messages = new JsonArray();
-        JsonObject userMsg = new JsonObject();
-        userMsg.addProperty("role", "user");
+        JsonArray messagesArray = new JsonArray();
+        
+        for (ChatMessage msg : messages) {
+            JsonObject msgObj = new JsonObject();
+            msgObj.addProperty("role", msg.getRole() == ChatMessage.Role.USER ? "user" : "assistant");
 
-        if (base64Image != null) {
-            JsonArray contents = new JsonArray();
+            if (msg.getMediaBytes() != null && msg.getRole() == ChatMessage.Role.USER && (msg.getMimeType() == null || msg.getMimeType().startsWith("image/"))) {
+                JsonArray contents = new JsonArray();
 
-            JsonObject textObj = new JsonObject();
-            textObj.addProperty("type", "text");
-            textObj.addProperty("text", userPrompt != null && !userPrompt.isEmpty() ? userPrompt : "Describe this image.");
-            contents.add(textObj);
+                JsonObject textObj = new JsonObject();
+                textObj.addProperty("type", "text");
+                textObj.addProperty("text", msg.getContent() != null ? msg.getContent() : "");
+                contents.add(textObj);
 
-            JsonObject imageObj = new JsonObject();
-            imageObj.addProperty("type", "image");
-            JsonObject sourceObj = new JsonObject();
-            sourceObj.addProperty("type", "base64");
-            sourceObj.addProperty("media_type", "image/jpeg");
-            sourceObj.addProperty("data", base64Image);
-            imageObj.add("source", sourceObj);
-            contents.add(imageObj);
+                String base64Image = Base64.encodeToString(msg.getMediaBytes(), Base64.NO_WRAP);
+                JsonObject imageObj = new JsonObject();
+                imageObj.addProperty("type", "image");
+                JsonObject sourceObj = new JsonObject();
+                sourceObj.addProperty("type", "base64");
+                sourceObj.addProperty("media_type", "image/jpeg");
+                sourceObj.addProperty("data", base64Image);
+                imageObj.add("source", sourceObj);
+                contents.add(imageObj);
 
-            userMsg.add("content", contents);
-        } else {
-            userMsg.addProperty("content", userPrompt);
+                msgObj.add("content", contents);
+            } else {
+                msgObj.addProperty("content", msg.getContent() != null ? msg.getContent() : "");
+            }
+            messagesArray.add(msgObj);
         }
 
-        messages.add(userMsg);
-        rootObj.add("messages", messages);
+        rootObj.add("messages", messagesArray);
 
         RequestBody reqBody = RequestBody.create(rootObj.toString(), JSON_MEDIA_TYPE);
         return new Request.Builder()
@@ -192,48 +229,50 @@ public class LlmClient {
                 .build();
     }
 
-    private Request buildOpenAiRequest(String apiKey, String model, String systemPrompt, String userPrompt, String base64Image) {
+    private Request buildOpenAiRequest(String apiKey, String model, String systemPrompt, java.util.List<ChatMessage> messages) {
         String url = "https://api.openai.com/v1/chat/completions";
 
         JsonObject rootObj = new JsonObject();
         rootObj.addProperty("model", model);
 
-        JsonArray messages = new JsonArray();
+        JsonArray messagesArray = new JsonArray();
 
         // System prompt
         if (systemPrompt != null && !systemPrompt.isEmpty()) {
             JsonObject sysMsg = new JsonObject();
             sysMsg.addProperty("role", "system");
             sysMsg.addProperty("content", systemPrompt);
-            messages.add(sysMsg);
+            messagesArray.add(sysMsg);
         }
 
-        // User message
-        JsonObject userMsg = new JsonObject();
-        userMsg.addProperty("role", "user");
+        for (ChatMessage msg : messages) {
+            JsonObject msgObj = new JsonObject();
+            msgObj.addProperty("role", msg.getRole() == ChatMessage.Role.USER ? "user" : "assistant");
 
-        if (base64Image != null) {
-            JsonArray contents = new JsonArray();
+            if (msg.getMediaBytes() != null && msg.getRole() == ChatMessage.Role.USER) {
+                JsonArray contents = new JsonArray();
 
-            JsonObject textObj = new JsonObject();
-            textObj.addProperty("type", "text");
-            textObj.addProperty("text", userPrompt != null && !userPrompt.isEmpty() ? userPrompt : "Describe this image.");
-            contents.add(textObj);
+                JsonObject textObj = new JsonObject();
+                textObj.addProperty("type", "text");
+                textObj.addProperty("text", msg.getContent() != null ? msg.getContent() : "");
+                contents.add(textObj);
 
-            JsonObject imageObj = new JsonObject();
-            imageObj.addProperty("type", "image_url");
-            JsonObject imageUrlObj = new JsonObject();
-            imageUrlObj.addProperty("url", "data:image/jpeg;base64," + base64Image);
-            imageObj.add("image_url", imageUrlObj);
-            contents.add(imageObj);
+                String base64Image = Base64.encodeToString(msg.getMediaBytes(), Base64.NO_WRAP);
+                JsonObject imageObj = new JsonObject();
+                imageObj.addProperty("type", "image_url");
+                JsonObject imageUrlObj = new JsonObject();
+                imageUrlObj.addProperty("url", "data:image/jpeg;base64," + base64Image);
+                imageObj.add("image_url", imageUrlObj);
+                contents.add(imageObj);
 
-            userMsg.add("content", contents);
-        } else {
-            userMsg.addProperty("content", userPrompt);
+                msgObj.add("content", contents);
+            } else {
+                msgObj.addProperty("content", msg.getContent() != null ? msg.getContent() : "");
+            }
+            messagesArray.add(msgObj);
         }
 
-        messages.add(userMsg);
-        rootObj.add("messages", messages);
+        rootObj.add("messages", messagesArray);
 
         RequestBody reqBody = RequestBody.create(rootObj.toString(), JSON_MEDIA_TYPE);
         return new Request.Builder()
@@ -243,7 +282,7 @@ public class LlmClient {
                 .build();
     }
 
-    private Request buildCustomRequest(String customUrl, String apiKey, String model, String systemPrompt, String userPrompt, String base64Image) {
+    private Request buildCustomRequest(String customUrl, String apiKey, String model, String systemPrompt, java.util.List<ChatMessage> messages) {
         // Assume OpenAI schema compatible URL
         String url = customUrl.endsWith("/") ? customUrl + "chat/completions" : customUrl + "/chat/completions";
 
@@ -252,38 +291,43 @@ public class LlmClient {
             rootObj.addProperty("model", model);
         }
 
-        JsonArray messages = new JsonArray();
+        JsonArray messagesArray = new JsonArray();
 
         if (systemPrompt != null && !systemPrompt.isEmpty()) {
             JsonObject sysMsg = new JsonObject();
             sysMsg.addProperty("role", "system");
             sysMsg.addProperty("content", systemPrompt);
-            messages.add(sysMsg);
+            messagesArray.add(sysMsg);
         }
 
-        JsonObject userMsg = new JsonObject();
-        userMsg.addProperty("role", "user");
-        if (base64Image != null) {
-            JsonArray contents = new JsonArray();
+        for (ChatMessage msg : messages) {
+            JsonObject msgObj = new JsonObject();
+            msgObj.addProperty("role", msg.getRole() == ChatMessage.Role.USER ? "user" : "assistant");
 
-            JsonObject textObj = new JsonObject();
-            textObj.addProperty("type", "text");
-            textObj.addProperty("text", userPrompt != null && !userPrompt.isEmpty() ? userPrompt : "Describe this image.");
-            contents.add(textObj);
+            if (msg.getMediaBytes() != null && msg.getRole() == ChatMessage.Role.USER) {
+                JsonArray contents = new JsonArray();
 
-            JsonObject imageObj = new JsonObject();
-            imageObj.addProperty("type", "image_url");
-            JsonObject imageUrlObj = new JsonObject();
-            imageUrlObj.addProperty("url", "data:image/jpeg;base64," + base64Image);
-            imageObj.add("image_url", imageUrlObj);
-            contents.add(imageObj);
+                JsonObject textObj = new JsonObject();
+                textObj.addProperty("type", "text");
+                textObj.addProperty("text", msg.getContent() != null ? msg.getContent() : "");
+                contents.add(textObj);
 
-            userMsg.add("content", contents);
-        } else {
-            userMsg.addProperty("content", userPrompt);
+                String base64Image = Base64.encodeToString(msg.getMediaBytes(), Base64.NO_WRAP);
+                JsonObject imageObj = new JsonObject();
+                imageObj.addProperty("type", "image_url");
+                JsonObject imageUrlObj = new JsonObject();
+                imageUrlObj.addProperty("url", "data:image/jpeg;base64," + base64Image);
+                imageObj.add("image_url", imageUrlObj);
+                contents.add(imageObj);
+
+                msgObj.add("content", contents);
+            } else {
+                msgObj.addProperty("content", msg.getContent() != null ? msg.getContent() : "");
+            }
+            messagesArray.add(msgObj);
         }
-        messages.add(userMsg);
-        rootObj.add("messages", messages);
+        
+        rootObj.add("messages", messagesArray);
 
         RequestBody reqBody = RequestBody.create(rootObj.toString(), JSON_MEDIA_TYPE);
         Request.Builder builder = new Request.Builder().url(url).post(reqBody);

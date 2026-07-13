@@ -171,6 +171,10 @@ public class ProgrammaticCamera implements SurfaceHolder.Callback {
         isCapturing = false;
     }
 
+    public void release() {
+        cleanup(null);
+    }
+
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {}
 

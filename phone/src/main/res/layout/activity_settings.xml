@@ -1,100 +1,240 @@
 <?xml version="1.0" encoding="utf-8"?>
-<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:padding="16dp">
+    android:orientation="vertical"
+    android:fitsSystemWindows="true">
 
-    <LinearLayout
+    <com.google.android.material.appbar.AppBarLayout
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:orientation="vertical">
+        android:layout_height="wrap_content">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="LLM Provider Settings"
-            android:textSize="20sp"
-            android:textStyle="bold"
-            android:layout_marginBottom="16dp" />
+        <com.google.android.material.appbar.MaterialToolbar
+            android:id="@+id/settingsToolbar"
+            android:layout_width="match_parent"
+            android:layout_height="?attr/actionBarSize"
+            app:title="Settings"
+            app:navigationIcon="?attr/homeAsUpIndicator"
+            style="@style/Widget.Material3.Toolbar.Surface" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Active Transport"
-            android:layout_marginTop="8dp" />
-        <Spinner
-            android:id="@+id/spinner_transport"
+    </com.google.android.material.appbar.AppBarLayout>
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:padding="16dp">
+
+        <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginBottom="16dp" />
+            android:orientation="vertical">
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Active LLM Provider" />
-        <Spinner
-            android:id="@+id/spinner_provider"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:layout_marginBottom="16dp" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Global Settings"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="16dp" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="API Key" />
-        <EditText
-            android:id="@+id/edit_api_key"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:inputType="textPassword"
-            android:hint="Enter API Key"
-            android:layout_marginBottom="16dp"
-            android:importantForAutofill="no" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Active Transport"
+                android:layout_marginTop="8dp" />
+            <Spinner
+                android:id="@+id/spinner_transport"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Model Name" />
-        <EditText
-            android:id="@+id/edit_model_name"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:hint="e.g. gemini-1.5-flash, gpt-4o, claude-3-5-sonnet"
-            android:layout_marginBottom="16dp"
-            android:importantForAutofill="no" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Gemini API Key" />
+            <EditText
+                android:id="@+id/edit_api_key_gemini"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textPassword"
+                android:hint="Enter Gemini Key"
+                android:layout_marginBottom="16dp"
+                android:importantForAutofill="no" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="Custom Endpoint URL (Optional)" />
-        <EditText
-            android:id="@+id/edit_custom_url"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:inputType="textUri"
-            android:hint="https://your-custom-llm-host/v1"
-            android:layout_marginBottom="16dp"
-            android:importantForAutofill="no" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="OpenAI API Key" />
+            <EditText
+                android:id="@+id/edit_api_key_openai"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textPassword"
+                android:hint="Enter OpenAI Key"
+                android:layout_marginBottom="16dp"
+                android:importantForAutofill="no" />
 
-        <TextView
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:text="System Instructions / Guidelines" />
-        <EditText
-            android:id="@+id/edit_system_prompt"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:inputType="textMultiLine"
-            android:lines="4"
-            android:hint="You are a helpful assistant on Google Glass. Keep answers brief (max 2 sentences)."
-            android:layout_marginBottom="24dp"
-            android:importantForAutofill="no" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Anthropic API Key" />
+            <EditText
+                android:id="@+id/edit_api_key_anthropic"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textPassword"
+                android:hint="Enter Anthropic Key"
+                android:layout_marginBottom="16dp"
+                android:importantForAutofill="no" />
 
-        <Button
-            android:id="@+id/btn_save"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:text="Save Configuration" />
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Custom Endpoint URL (Optional)" />
+            <EditText
+                android:id="@+id/edit_custom_url"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textUri"
+                android:hint="https://your-custom-llm-host/v1"
+                android:layout_marginBottom="16dp"
+                android:importantForAutofill="no" />
 
-    </LinearLayout>
-</ScrollView>
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="System Instructions / Guidelines" />
+            <EditText
+                android:id="@+id/edit_system_prompt"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="textMultiLine"
+                android:lines="4"
+                android:hint="You are a helpful assistant on Google Glass. Keep answers brief."
+                android:layout_marginBottom="32dp"
+                android:importantForAutofill="no" />
+
+            <!-- PRESET 1 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Preset 1 Configuration"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="16dp" />
+            
+            <EditText
+                android:id="@+id/edit_preset_name_1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Preset Name (e.g. Fast Flash)"
+                android:layout_marginBottom="8dp" />
+            <Spinner
+                android:id="@+id/spinner_provider_1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp" />
+            <EditText
+                android:id="@+id/edit_model_name_1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Model Name (e.g. gemini-1.5-flash)"
+                android:layout_marginBottom="8dp" />
+            <Spinner
+                android:id="@+id/spinner_reasoning_1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp" />
+            <Switch
+                android:id="@+id/switch_audio_1"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Model Supports Direct Audio Input"
+                android:layout_marginBottom="32dp" />
+
+            <!-- PRESET 2 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Preset 2 Configuration"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="16dp" />
+            
+            <EditText
+                android:id="@+id/edit_preset_name_2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Preset Name"
+                android:layout_marginBottom="8dp" />
+            <Spinner
+                android:id="@+id/spinner_provider_2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp" />
+            <EditText
+                android:id="@+id/edit_model_name_2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Model Name"
+                android:layout_marginBottom="8dp" />
+            <Spinner
+                android:id="@+id/spinner_reasoning_2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp" />
+            <Switch
+                android:id="@+id/switch_audio_2"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Model Supports Direct Audio Input"
+                android:layout_marginBottom="32dp" />
+
+            <!-- PRESET 3 -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Preset 3 Configuration"
+                android:textSize="20sp"
+                android:textStyle="bold"
+                android:layout_marginBottom="16dp" />
+            
+            <EditText
+                android:id="@+id/edit_preset_name_3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Preset Name"
+                android:layout_marginBottom="8dp" />
+            <Spinner
+                android:id="@+id/spinner_provider_3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp" />
+            <EditText
+                android:id="@+id/edit_model_name_3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Model Name"
+                android:layout_marginBottom="8dp" />
+            <Spinner
+                android:id="@+id/spinner_reasoning_3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="8dp" />
+            <Switch
+                android:id="@+id/switch_audio_3"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Model Supports Direct Audio Input"
+                android:layout_marginBottom="32dp" />
+
+            <Button
+                android:id="@+id/btn_save"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:text="Save Configuration" />
+
+        </LinearLayout>
+    </ScrollView>
+</LinearLayout>

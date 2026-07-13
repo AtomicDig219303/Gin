@@ -3,11 +3,15 @@ package com.custom.gin.transport;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
 import android.bluetooth.BluetoothSocket;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -15,6 +19,8 @@ public class RfcommTransport implements GinTransport {
     private static final String TAG = "RfcommTransport";
     private static final UUID GIN_UUID = UUID.fromString("8ce255c0-200a-11eb-adc1-0242ac120002");
     private static final byte MAGIC_BYTE = 0x19;
+    private static final int MAX_RETRIES = 5;
+    private static final long INITIAL_RETRY_DELAY_MS = 2000;
 
     private final BluetoothAdapter bluetoothAdapter;
     private final Listener listener;
@@ -22,6 +28,10 @@ public class RfcommTransport implements GinTransport {
     private ConnectedThread connectedThread;
     private boolean isRunning = false;
     private boolean isConnected = false;
+    private int retryCount = 0;
+    private final Handler retryHandler = new Handler(Looper.getMainLooper());
+    private List<BluetoothDevice> candidateDevices;
+    private int currentDeviceIndex = 0;
 
     public RfcommTransport(Listener listener) {
         this.listener = listener;
@@ -32,6 +42,8 @@ public class RfcommTransport implements GinTransport {
     public synchronized void start() {
         if (isRunning) return;
         isRunning = true;
+        retryCount = 0;
+        currentDeviceIndex = 0;
         Log.d(TAG, "Starting RFCOMM Transport...");
 
         if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
@@ -39,23 +51,33 @@ public class RfcommTransport implements GinTransport {
             return;
         }
 
-        // Search paired devices
-        BluetoothDevice targetDevice = null;
+        // Collect ALL paired devices as candidates
+        candidateDevices = new ArrayList<>();
         Set<BluetoothDevice> pairedDevices = bluetoothAdapter.getBondedDevices();
-        if (pairedDevices != null && !pairedDevices.isEmpty()) {
+        if (pairedDevices != null) {
             for (BluetoothDevice device : pairedDevices) {
-                // Connect to the first paired device (typically the phone companion)
-                targetDevice = device;
-                break;
+                candidateDevices.add(device);
+                Log.d(TAG, "Paired device candidate: " + device.getName() + " [" + device.getAddress() + "]");
             }
         }
 
-        if (targetDevice == null) {
+        if (candidateDevices.isEmpty()) {
             listener.onError("No paired Bluetooth devices found. Please pair Glass with your phone.");
             return;
         }
 
-        Log.d(TAG, "Target phone device: " + targetDevice.getName() + " [" + targetDevice.getAddress() + "]");
+        connectToNextCandidate();
+    }
+
+    private synchronized void connectToNextCandidate() {
+        if (!isRunning || candidateDevices == null || candidateDevices.isEmpty()) return;
+
+        BluetoothDevice targetDevice = candidateDevices.get(currentDeviceIndex);
+        Log.d(TAG, "Attempting connection to: " + targetDevice.getName()
+                + " [" + targetDevice.getAddress() + "]"
+                + " (attempt " + (retryCount + 1) + "/" + MAX_RETRIES
+                + ", device " + (currentDeviceIndex + 1) + "/" + candidateDevices.size() + ")");
+
         connectThread = new ConnectThread(targetDevice);
         connectThread.start();
     }
@@ -64,6 +86,7 @@ public class RfcommTransport implements GinTransport {
     public synchronized void stop() {
         isRunning = false;
         isConnected = false;
+        retryHandler.removeCallbacksAndMessages(null);
         Log.d(TAG, "Stopping RFCOMM Transport...");
         if (connectThread != null) {
             connectThread.cancel();
@@ -111,10 +134,39 @@ public class RfcommTransport implements GinTransport {
 
     private synchronized void connectionFailed() {
         isConnected = false;
-        if (isRunning) {
-            listener.onError("Connection failed");
-            // Retry logic could be added here, but let's notify for now
+        if (!isRunning) return;
+
+        // Try the next paired device before retrying
+        currentDeviceIndex++;
+        if (currentDeviceIndex < candidateDevices.size()) {
+            Log.d(TAG, "Trying next paired device...");
+            connectToNextCandidate();
+            return;
         }
+
+        // Exhausted all devices; increment retry count and cycle back
+        retryCount++;
+        currentDeviceIndex = 0;
+
+        if (retryCount >= MAX_RETRIES) {
+            listener.onError("Connection failed after " + MAX_RETRIES + " retries across all paired devices");
+            return;
+        }
+
+        // Exponential backoff: 2s, 4s, 8s, 16s...
+        long delay = INITIAL_RETRY_DELAY_MS * (1L << (retryCount - 1));
+        Log.d(TAG, "All devices failed. Retrying in " + delay + "ms (retry " + retryCount + "/" + MAX_RETRIES + ")");
+
+        retryHandler.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (RfcommTransport.this) {
+                    if (isRunning && !isConnected) {
+                        connectToNextCandidate();
+                    }
+                }
+            }
+        }, delay);
     }
 
     private synchronized void connectionLost() {

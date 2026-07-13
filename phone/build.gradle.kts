@@ -1,3 +1,5 @@
+import java.net.URL
+
 plugins {
     id("com.android.application")
 }
@@ -42,6 +44,8 @@ android {
         }
     }
 }
+
+
 
 dependencies {
     implementation("androidx.appcompat:appcompat:1.6.1")

@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="#000000"
+    android:padding="20dp">
+
+    <TextView
+        android:id="@+id/settings_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Gin Settings"
+        android:textColor="#33B5E5"
+        android:textSize="28sp"
+        android:fontFamily="sans-serif-light"
+        android:layout_marginBottom="24dp" />
+
+    <TextView
+        android:id="@+id/transport_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Transport: BLE"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:fontFamily="sans-serif-thin"
+        android:layout_marginBottom="16dp" />
+
+    <TextView
+        android:id="@+id/instruction_text"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Tap to switch to RFCOMM"
+        android:textColor="#99CC00"
+        android:fontFamily="sans-serif-thin"
+        android:textSize="18sp" />
+
+</LinearLayout>

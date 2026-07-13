@@ -1,6 +1,7 @@
 package com.custom.gin;
 
 import android.content.Context;
+import android.content.SharedPreferences;
 import android.util.Log;
 import com.custom.gin.transport.BleTransport;
 import com.custom.gin.transport.GinTransport;
@@ -11,15 +12,23 @@ import java.util.List;
 
 public class GinConnectionManager implements GinTransport.Listener {
     private static final String TAG = "GinConnectionManager";
+    private static final String PREFS_NAME = "gin_glass_prefs";
+    private static final String KEY_TRANSPORT = "transport_type";
+    private static final String TRANSPORT_BLE = "BLE";
+    private static final String TRANSPORT_RFCOMM = "RFCOMM";
+
     private static GinConnectionManager instance;
 
     private final Context context;
+    private final SharedPreferences prefs;
     private GinTransport activeTransport;
-    private boolean useBle = false; // Default to Bluetooth Classic RFCOMM
+    private String currentTransportType;
     private final List<GinTransport.Listener> listeners = new ArrayList<>();
 
     private GinConnectionManager(Context context) {
         this.context = context.getApplicationContext();
+        this.prefs = this.context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        this.currentTransportType = prefs.getString(KEY_TRANSPORT, TRANSPORT_RFCOMM);
         initializeTransport();
     }
 
@@ -35,26 +44,44 @@ public class GinConnectionManager implements GinTransport.Listener {
             activeTransport.stop();
         }
 
-        if (useBle) {
+        if (TRANSPORT_BLE.equals(currentTransportType)) {
             activeTransport = new BleTransport(context, this);
+            Log.d(TAG, "Initialized BLE transport");
         } else {
             activeTransport = new RfcommTransport(this);
+            Log.d(TAG, "Initialized RFCOMM transport");
         }
-        
+
         if (activeTransport != null) {
             activeTransport.start();
         }
     }
 
-    public synchronized void setUseBle(boolean useBle) {
-        if (this.useBle != useBle) {
-            this.useBle = useBle;
-            initializeTransport();
-        }
+    /**
+     * Switch transport at runtime. Persists choice to SharedPreferences.
+     * Disconnects the current transport in a background thread before
+     * initializing the new one.
+     */
+    public void selectTransport(final String type) {
+        final String normalized = TRANSPORT_BLE.equalsIgnoreCase(type) ? TRANSPORT_BLE : TRANSPORT_RFCOMM;
+        if (normalized.equals(currentTransportType))
+            return;
+
+        prefs.edit().putString(KEY_TRANSPORT, normalized).apply();
+        currentTransportType = normalized;
+
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                synchronized (GinConnectionManager.this) {
+                    initializeTransport();
+                }
+            }
+        }).start();
     }
 
-    public boolean isUsingBle() {
-        return useBle;
+    public String getCurrentTransportType() {
+        return currentTransportType;
     }
 
     public GinTransport getTransport() {
@@ -103,6 +130,24 @@ public class GinConnectionManager implements GinTransport.Listener {
 
     @Override
     public void onDataReceived(byte[] data, byte type) {
+        if (type == GinTransport.TYPE_CONTROL) {
+            String cmd = new String(data);
+            if (cmd.startsWith("SYNC_PRESETS:")) {
+                String[] parts = cmd.substring("SYNC_PRESETS:".length()).split("\\|");
+                if (parts.length >= 4) {
+                    try {
+                        prefs.edit()
+                                .putInt("active_preset_index", Integer.parseInt(parts[0]))
+                                .putString("preset_name_1", parts[1])
+                                .putString("preset_name_2", parts[2])
+                                .putString("preset_name_3", parts[3])
+                                .apply();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error parsing presets", e);
+                    }
+                }
+            }
+        }
         synchronized (listeners) {
             for (GinTransport.Listener l : listeners) {
                 l.onDataReceived(data, type);

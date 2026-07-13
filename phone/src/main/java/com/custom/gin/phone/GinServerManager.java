@@ -14,16 +14,13 @@ import com.custom.gin.phone.transport.RfcommServer;
 
 import org.json.JSONObject;
 
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.IOException;
-
 public class GinServerManager implements GinTransport.Listener {
     private static final String TAG = "GinServerManager";
     private static GinServerManager instance;
 
     public interface StatusListener {
         void onServerStateChanged(boolean running, boolean connected);
+
         void onLogAdded(String logLine);
     }
 
@@ -38,12 +35,16 @@ public class GinServerManager implements GinTransport.Listener {
     private boolean isRunning = false;
     private boolean isConnected = false;
 
+    private com.custom.gin.phone.chat.ChatSession chatSession;
+    private boolean isChatMode = true;
+
     private GinServerManager(Context context) {
         this.context = context.getApplicationContext();
         this.prefs = context.getSharedPreferences("gin_prefs", Context.MODE_PRIVATE);
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.llmClient = new LlmClient();
-        this.audioTranscriber = new AudioTranscriber();
+        this.audioTranscriber = new AudioTranscriber(this.context);
+        this.chatSession = new com.custom.gin.phone.chat.ChatSession();
     }
 
     public static synchronized GinServerManager getInstance(Context context) {
@@ -53,13 +54,21 @@ public class GinServerManager implements GinTransport.Listener {
         return instance;
     }
 
+    public void setChatMode(boolean chatMode) {
+        this.isChatMode = chatMode;
+        if (!chatMode) {
+            chatSession.clear();
+        }
+    }
+
     public void setStatusListener(StatusListener listener) {
         this.statusListener = listener;
         notifyState();
     }
 
     public synchronized void startServer() {
-        if (isRunning) return;
+        if (isRunning)
+            return;
         isRunning = true;
         addLog("Starting server...");
 
@@ -124,6 +133,24 @@ public class GinServerManager implements GinTransport.Listener {
         isConnected = true;
         addLog("Glass client connected");
         notifyState();
+        syncPresetsToGlass();
+    }
+
+    private void syncPresetsToGlass() {
+        try {
+            int activeIndex = prefs.getInt("active_preset_index", 1);
+            String name1 = prefs.getString("preset_name_1", "Preset 1");
+            String name2 = prefs.getString("preset_name_2", "Preset 2");
+            String name3 = prefs.getString("preset_name_3", "Preset 3");
+
+            String payload = "SYNC_PRESETS:" + activeIndex + "|" + name1 + "|" + name2 + "|" + name3;
+            if (serverTransport != null && isConnected) {
+                serverTransport.sendData(payload.getBytes("UTF-8"), GinTransport.TYPE_CONTROL);
+                addLog("Sent preset sync to Glass: " + payload);
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "Error syncing presets", e);
+        }
     }
 
     @Override
@@ -141,120 +168,174 @@ public class GinServerManager implements GinTransport.Listener {
         } else if (type == GinTransport.TYPE_AUDIO) {
             addLog("Received audio from Glass: " + data.length + " bytes");
             handleAudioQuery(data);
+        } else if (type == GinTransport.TYPE_CONTROL) {
+            handleControlMessage(new String(data));
         }
     }
 
+    private void handleControlMessage(String cmd) {
+        addLog("Received control: " + cmd);
+        if (cmd.startsWith("SET_PRESET:")) {
+            try {
+                int index = Integer.parseInt(cmd.substring("SET_PRESET:".length()));
+                prefs.edit().putInt("active_preset_index", index).apply();
+                addLog("Active preset switched to " + index);
+            } catch (Exception e) {
+                Log.e(TAG, "Invalid preset index", e);
+            }
+        }
+    }
+
+    private String getSystemPrompt() {
+        String basePrompt = prefs.getString("system_prompt", "");
+        int activeIndex = prefs.getInt("active_preset_index", 1);
+        String reasoning = prefs.getString("preset_reasoning_" + activeIndex, "None");
+        if ("High".equals(reasoning)) {
+            basePrompt += "\n\nBefore answering, please think step by step about your response. Put your thoughts inside <thinking> and </thinking> XML tags. After the closing tag, provide your final concise answer for the user. Do not leak the <thinking> tags into your final answer.";
+        }
+        return basePrompt;
+    }
+
+    private String getApiKeyForProvider(String provider) {
+        if ("Gemini".equalsIgnoreCase(provider)) {
+            return prefs.getString("api_key_gemini", "");
+        } else if ("OpenAI GPT".equalsIgnoreCase(provider)) {
+            return prefs.getString("api_key_openai", "");
+        } else if ("Anthropic Claude".equalsIgnoreCase(provider)) {
+            return prefs.getString("api_key_anthropic", "");
+        }
+        return "";
+    }
+
+    private void handleLlmResponse(String provider, String responseText) {
+        addLog("Raw LLM response: " + responseText);
+
+        // Strip out <thinking> tags before sending back to Glass
+        String cleanText = responseText;
+        int thinkStart = cleanText.indexOf("<thinking>");
+        int thinkEnd = cleanText.indexOf("</thinking>");
+        if (thinkStart != -1 && thinkEnd != -1 && thinkEnd > thinkStart) {
+            cleanText = cleanText.substring(0, thinkStart) + cleanText.substring(thinkEnd + "</thinking>".length());
+            cleanText = cleanText.trim();
+        } else if (thinkStart != -1) {
+            // Unclosed thinking tag
+            cleanText = cleanText.substring(0, thinkStart).trim();
+        }
+
+        // Ensure there is something to say
+        if (cleanText.isEmpty()) {
+            cleanText = "(Thinking complete, but no answer provided)";
+        }
+
+        // Add assistant response to history
+        chatSession.addMessage(new com.custom.gin.phone.chat.ChatMessage(
+                com.custom.gin.phone.chat.ChatMessage.Role.ASSISTANT, responseText));
+
+        sendTextResponse(provider, cleanText);
+    }
+
     private void handleImageQuery(byte[] imageBytes) {
-        // 1. Tell Glass we are thinking
         serverTransport.sendData("THINKING".getBytes(), GinTransport.TYPE_CONTROL);
         addLog("Sent THINKING state to Glass");
 
-        // 2. Load configurations
-        final String provider = prefs.getString("provider", "Gemini");
-        String apiKey = prefs.getString("api_key", "");
-        String modelName = prefs.getString("model_name", "gemini-1.5-flash");
-        String customUrl = prefs.getString("custom_url", "");
-        String systemPrompt = prefs.getString("system_prompt", "");
+        if (!isChatMode) {
+            chatSession.clear();
+        }
+
         String userPrompt = "Describe what is in this photo taken from my Google Glass camera.";
+        com.custom.gin.phone.chat.ChatMessage msg = new com.custom.gin.phone.chat.ChatMessage(
+                com.custom.gin.phone.chat.ChatMessage.Role.USER, userPrompt, imageBytes, "image/jpeg");
+        chatSession.addMessage(msg);
+
+        int activeIndex = prefs.getInt("active_preset_index", 1);
+        final String provider = prefs.getString("preset_provider_" + activeIndex, "Gemini");
+        String modelName = prefs.getString("preset_model_" + activeIndex, "gemini-1.5-flash");
+        String apiKey = getApiKeyForProvider(provider);
+        String customUrl = prefs.getString("custom_url", "");
 
         addLog("Querying LLM (" + provider + ") with captured photo...");
-        llmClient.queryLlm(provider, apiKey, modelName, customUrl, systemPrompt, userPrompt, imageBytes, "image/jpeg", new LlmClient.Callback() {
-            @Override
-            public void onSuccess(String responseText) {
-                addLog("LLM response: " + responseText);
-                sendTextResponse(provider, responseText);
-            }
+        llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(), chatSession.getMessages(),
+                new LlmClient.Callback() {
+                    @Override
+                    public void onSuccess(String responseText) {
+                        handleLlmResponse(provider, responseText);
+                    }
 
-            @Override
-            public void onFailure(String errorMessage) {
-                addLog("LLM Query failed: " + errorMessage);
-                sendTextResponse(provider, "Query failed: " + errorMessage);
-            }
-        });
+                    @Override
+                    public void onFailure(String errorMessage) {
+                        addLog("LLM Query failed: " + errorMessage);
+                        sendTextResponse(provider, "Query failed: " + errorMessage);
+                    }
+                });
     }
 
     private void handleAudioQuery(final byte[] audioBytes) {
-        // 1. Tell Glass we are thinking
         serverTransport.sendData("THINKING".getBytes(), GinTransport.TYPE_CONTROL);
         addLog("Sent THINKING state to Glass");
 
-        final String provider = prefs.getString("provider", "Gemini");
-        final String apiKey = prefs.getString("api_key", "");
-        final String modelName = prefs.getString("model_name", "gemini-1.5-flash");
-        final String customUrl = prefs.getString("custom_url", "");
-        final String systemPrompt = prefs.getString("system_prompt", "");
+        if (!isChatMode) {
+            chatSession.clear();
+        }
 
-        // If Gemini, send raw audio bytes directly to Gemini (multimodal)
-        if ("Gemini".equalsIgnoreCase(provider)) {
-            addLog("Gemini selected, sending raw audio bytes directly to Gemini multimodal API...");
-            llmClient.queryLlm(provider, apiKey, modelName, customUrl, systemPrompt, 
-                    "Please answer this voice query", audioBytes, "audio/3gpp", new LlmClient.Callback() {
+        int activeIndex = prefs.getInt("active_preset_index", 1);
+        final String provider = prefs.getString("preset_provider_" + activeIndex, "Gemini");
+        final String modelName = prefs.getString("preset_model_" + activeIndex, "gemini-1.5-flash");
+        final String apiKey = getApiKeyForProvider(provider);
+        final String customUrl = prefs.getString("custom_url", "");
+        boolean audioSupported = prefs.getBoolean("preset_audio_" + activeIndex, true);
+
+        if (audioSupported) {
+            addLog(provider + " selected, sending WAV audio directly to multimodal API...");
+            com.custom.gin.phone.chat.ChatMessage msg = new com.custom.gin.phone.chat.ChatMessage(
+                    com.custom.gin.phone.chat.ChatMessage.Role.USER, "Please answer this voice query", audioBytes,
+                    "audio/wav");
+            chatSession.addMessage(msg);
+
+            llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(), chatSession.getMessages(),
+                    new LlmClient.Callback() {
+                        @Override
+                        public void onSuccess(String responseText) {
+                            handleLlmResponse(provider, responseText);
+                        }
+
+                        @Override
+                        public void onFailure(String errorMessage) {
+                            addLog(provider + " Audio query failed: " + errorMessage);
+                            sendTextResponse(provider, "Query failed: " + errorMessage);
+                        }
+                    });
+        } else {
+            addLog("Transcribing WAV audio using on-device Vosk STT...");
+            audioTranscriber.transcribeAudio(audioBytes, new AudioTranscriber.Callback() {
                 @Override
-                public void onSuccess(String responseText) {
-                    addLog("Gemini Audio response: " + responseText);
-                    sendTextResponse(provider, responseText);
+                public void onSuccess(String transcribedText) {
+                    addLog("Local Transcribed Text: \"" + transcribedText + "\"");
+                    com.custom.gin.phone.chat.ChatMessage msg = new com.custom.gin.phone.chat.ChatMessage(
+                            com.custom.gin.phone.chat.ChatMessage.Role.USER, transcribedText);
+                    chatSession.addMessage(msg);
+
+                    addLog("Querying LLM (" + provider + ") with query text...");
+                    llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(),
+                            chatSession.getMessages(), new LlmClient.Callback() {
+                                @Override
+                                public void onSuccess(String responseText) {
+                                    handleLlmResponse(provider, responseText);
+                                }
+
+                                @Override
+                                public void onFailure(String errorMessage) {
+                                    addLog("LLM Query failed: " + errorMessage);
+                                    sendTextResponse(provider, "Query failed: " + errorMessage);
+                                }
+                            });
                 }
 
                 @Override
                 public void onFailure(String errorMessage) {
-                    addLog("Gemini Audio query failed: " + errorMessage);
-                    sendTextResponse(provider, "Query failed: " + errorMessage);
+                    addLog("Local transcription failed: " + errorMessage);
+                    sendTextResponse(provider, "Transcription failed: " + errorMessage);
                 }
             });
-        } else {
-            // For other providers (OpenAI, Claude, Custom), transcribe audio to text first using Whisper
-            addLog("Transcribing audio using Whisper API...");
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        final File tempFile = File.createTempFile("temp_voice", ".3gp", context.getCacheDir());
-                        FileOutputStream fos = new FileOutputStream(tempFile);
-                        fos.write(audioBytes);
-                        fos.close();
-
-                        // Get OpenAI API key (either saved specifically or fall back to general api_key)
-                        // In this basic version, we assume the user saves the OpenAI key in settings if using OpenAI GPT/Whisper
-                        String sttKey = "OpenAI GPT".equalsIgnoreCase(provider) ? apiKey : prefs.getString("api_key", "");
-
-                        audioTranscriber.transcribeAudio(tempFile, sttKey, new AudioTranscriber.Callback() {
-                            @Override
-                            public void onSuccess(String transcribedText) {
-                                addLog("Transcribed Text: \"" + transcribedText + "\"");
-                                tempFile.delete();
-
-                                // Query LLM with the transcribed text
-                                addLog("Querying LLM (" + provider + ") with query text...");
-                                llmClient.queryLlm(provider, apiKey, modelName, customUrl, systemPrompt, transcribedText, null, null, new LlmClient.Callback() {
-                                    @Override
-                                    public void onSuccess(String responseText) {
-                                        addLog("LLM response: " + responseText);
-                                        sendTextResponse(provider, responseText);
-                                    }
-
-                                    @Override
-                                    public void onFailure(String errorMessage) {
-                                        addLog("LLM Query failed: " + errorMessage);
-                                        sendTextResponse(provider, "Query failed: " + errorMessage);
-                                    }
-                                });
-                            }
-
-                            @Override
-                            public void onFailure(String errorMessage) {
-                                addLog("Transcription failed: " + errorMessage);
-                                tempFile.delete();
-                                sendTextResponse(provider, "Transcription failed: " + errorMessage);
-                            }
-                        });
-
-                    } catch (IOException e) {
-                        Log.e(TAG, "Failed to transcribe audio file", e);
-                        addLog("Error handling audio file: " + e.getMessage());
-                        sendTextResponse(provider, "Audio error: " + e.getMessage());
-                    }
-                }
-            }).start();
         }
     }
 
