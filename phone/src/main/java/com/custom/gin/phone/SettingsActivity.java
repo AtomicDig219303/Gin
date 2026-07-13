@@ -134,7 +134,7 @@ public class SettingsActivity extends AppCompatActivity {
         editApiKeyAnthropic.setText(prefs.getString("api_key_anthropic", ""));
         editCustomUrl.setText(prefs.getString("custom_url", ""));
         editSystemPrompt.setText(prefs.getString("system_prompt", 
-                "You are an AI assistant on Google Glass. Keep responses very short, concise, and direct (max 2 sentences)."));
+                "You are an AI assistant on Google Glass. Keep responses very short, concise, and direct (max 2 sentences). Don't fear going into details if the user has explicitly asked for it."));
 
         loadPreset(1, editPresetName1, spinnerProvider1, editModelName1, spinnerReasoning1, switchAudio1);
         loadPreset(2, editPresetName2, spinnerProvider2, editModelName2, spinnerReasoning2, switchAudio2);
