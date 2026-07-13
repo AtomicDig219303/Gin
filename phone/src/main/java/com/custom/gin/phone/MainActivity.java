@@ -211,6 +211,13 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
         recyclerChat.scrollToPosition(displayMessages.size() - 1);
     }
 
+    @Override
+    public void onChatModeChanged(boolean isChatMode) {
+        if (switchMode.isChecked() != isChatMode) {
+            switchMode.setChecked(isChatMode);
+        }
+    }
+
     private void startServerService() {
         Intent serviceIntent = new Intent(this, GinServerService.class);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

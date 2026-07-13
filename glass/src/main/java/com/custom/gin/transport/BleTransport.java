@@ -113,15 +113,30 @@ public class BleTransport implements GinTransport {
     private final BluetoothAdapter.LeScanCallback leScanCallback = new BluetoothAdapter.LeScanCallback() {
         @Override
         public void onLeScan(final BluetoothDevice device, int rssi, byte[] scanRecord) {
-            Log.d(TAG, "Found device: " + device.getName() + " [" + device.getAddress() + "]");
-            // Check if device name or scan record matches (for now, connect to the first matching device name or just any device since it's a test environment)
-            stopScanning();
-            handler.post(new Runnable() {
-                @Override
-                public void run() {
-                    connectToDevice(device);
+            // Convert scanRecord to hex to check for our 128-bit UUID (little endian)
+            StringBuilder sb = new StringBuilder();
+            if (scanRecord != null) {
+                for (byte b : scanRecord) {
+                    sb.append(String.format("%02x", b));
                 }
-            });
+            }
+            
+            // SERVICE_UUID = 8ce255c1-200a-11eb-adc1-0242ac120002
+            // In little endian hex: 020012ac4202c1adeb110a20c155e28c
+            String targetUuid = "020012ac4202c1adeb110a20c155e28c";
+            
+            if (sb.toString().contains(targetUuid)) {
+                Log.d(TAG, "Found target Gin Phone device: " + device.getName() + " [" + device.getAddress() + "]");
+                stopScanning();
+                handler.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        connectToDevice(device);
+                    }
+                });
+            } else {
+                Log.d(TAG, "Ignoring unrelated BLE device: " + device.getAddress());
+            }
         }
     };
 

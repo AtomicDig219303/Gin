@@ -22,6 +22,8 @@ public class GinServerManager implements GinTransport.Listener {
         void onServerStateChanged(boolean running, boolean connected);
 
         void onLogAdded(String logLine);
+        
+        void onChatModeChanged(boolean isChatMode);
     }
 
     private final Context context;
@@ -34,7 +36,13 @@ public class GinServerManager implements GinTransport.Listener {
     private boolean isRunning = false;
     private boolean isConnected = false;
 
-    private com.custom.gin.phone.chat.ChatSession chatSession;
+    private com.custom.gin.phone.chat.ChatSession[] chatSessions;
+
+    private com.custom.gin.phone.chat.ChatSession getActiveChatSession() {
+        int index = prefs.getInt("active_preset_index", 1);
+        if (index < 1 || index > 3) index = 1;
+        return chatSessions[index];
+    }
     private boolean isChatMode = true;
 
     private GinServerManager(Context context) {
@@ -42,7 +50,10 @@ public class GinServerManager implements GinTransport.Listener {
         this.prefs = context.getSharedPreferences("gin_prefs", Context.MODE_PRIVATE);
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.llmClient = new LlmClient();
-        this.chatSession = new com.custom.gin.phone.chat.ChatSession();
+        this.chatSessions = new com.custom.gin.phone.chat.ChatSession[4];
+        for (int i = 1; i <= 3; i++) {
+            this.chatSessions[i] = new com.custom.gin.phone.chat.ChatSession();
+        }
     }
 
     public static synchronized GinServerManager getInstance(Context context) {
@@ -52,11 +63,21 @@ public class GinServerManager implements GinTransport.Listener {
         return instance;
     }
 
-    public void setChatMode(boolean chatMode) {
+    public void setChatMode(final boolean chatMode) {
         this.isChatMode = chatMode;
         if (!chatMode) {
-            chatSession.clear();
+            for (int i = 1; i <= 3; i++) {
+                chatSessions[i].clear();
+            }
         }
+        mainHandler.post(new Runnable() {
+            @Override
+            public void run() {
+                if (statusListener != null) {
+                    statusListener.onChatModeChanged(chatMode);
+                }
+            }
+        });
     }
 
     public void setStatusListener(StatusListener listener) {
@@ -177,10 +198,14 @@ public class GinServerManager implements GinTransport.Listener {
             try {
                 int index = Integer.parseInt(cmd.substring("SET_PRESET:".length()));
                 prefs.edit().putInt("active_preset_index", index).apply();
-                addLog("Active preset switched to " + index);
+                addLog("Active preset switched to " + index + ". Context preserved independently.");
             } catch (Exception e) {
                 Log.e(TAG, "Invalid preset index", e);
             }
+        } else if (cmd.startsWith("SET_CHAT_MODE:")) {
+            boolean mode = Boolean.parseBoolean(cmd.substring("SET_CHAT_MODE:".length()));
+            addLog("Glass requested chat mode: " + mode);
+            setChatMode(mode);
         }
     }
 
@@ -226,7 +251,7 @@ public class GinServerManager implements GinTransport.Listener {
         }
 
         // Add assistant response to history
-        chatSession.addMessage(new com.custom.gin.phone.chat.ChatMessage(
+        getActiveChatSession().addMessage(new com.custom.gin.phone.chat.ChatMessage(
                 com.custom.gin.phone.chat.ChatMessage.Role.ASSISTANT, responseText));
 
         sendTextResponse(provider, cleanText);
@@ -237,13 +262,13 @@ public class GinServerManager implements GinTransport.Listener {
         addLog("Sent THINKING state to Glass");
 
         if (!isChatMode) {
-            chatSession.clear();
+            getActiveChatSession().clear();
         }
 
         String userPrompt = "Describe what is in this photo taken from my Google Glass camera.";
         com.custom.gin.phone.chat.ChatMessage msg = new com.custom.gin.phone.chat.ChatMessage(
                 com.custom.gin.phone.chat.ChatMessage.Role.USER, userPrompt, imageBytes, "image/jpeg");
-        chatSession.addMessage(msg);
+        getActiveChatSession().addMessage(msg);
 
         int activeIndex = prefs.getInt("active_preset_index", 1);
         final String provider = prefs.getString("preset_provider_" + activeIndex, "Gemini");
@@ -252,7 +277,7 @@ public class GinServerManager implements GinTransport.Listener {
         String customUrl = prefs.getString("custom_url", "");
 
         addLog("Querying LLM (" + provider + ") with captured photo...");
-        llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(), chatSession.getMessages(),
+        llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(), getActiveChatSession().getMessages(),
                 new LlmClient.Callback() {
                     @Override
                     public void onSuccess(String responseText) {
@@ -272,7 +297,7 @@ public class GinServerManager implements GinTransport.Listener {
         addLog("Sent THINKING state to Glass");
 
         if (!isChatMode) {
-            chatSession.clear();
+            getActiveChatSession().clear();
         }
 
         int activeIndex = prefs.getInt("active_preset_index", 1);
@@ -287,9 +312,9 @@ public class GinServerManager implements GinTransport.Listener {
             com.custom.gin.phone.chat.ChatMessage msg = new com.custom.gin.phone.chat.ChatMessage(
                     com.custom.gin.phone.chat.ChatMessage.Role.USER, "Please answer this voice query", audioBytes,
                     "audio/wav");
-            chatSession.addMessage(msg);
+            getActiveChatSession().addMessage(msg);
 
-            llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(), chatSession.getMessages(),
+            llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(), getActiveChatSession().getMessages(),
                     new LlmClient.Callback() {
                         @Override
                         public void onSuccess(String responseText) {
@@ -317,11 +342,11 @@ public class GinServerManager implements GinTransport.Listener {
                     addLog("Cloud Transcribed Text: \"" + transcribedText + "\"");
                     com.custom.gin.phone.chat.ChatMessage msg = new com.custom.gin.phone.chat.ChatMessage(
                             com.custom.gin.phone.chat.ChatMessage.Role.USER, transcribedText);
-                    chatSession.addMessage(msg);
+                    getActiveChatSession().addMessage(msg);
 
                     addLog("Querying LLM (" + provider + ") with query text...");
                     llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(),
-                            chatSession.getMessages(), new LlmClient.Callback() {
+                            getActiveChatSession().getMessages(), new LlmClient.Callback() {
                                 @Override
                                 public void onSuccess(String responseText) {
                                     handleLlmResponse(provider, responseText);

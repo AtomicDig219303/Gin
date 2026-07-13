@@ -146,11 +146,15 @@ public class BleServer implements GinTransport {
                 .build();
 
         AdvertiseData data = new AdvertiseData.Builder()
-                .setIncludeDeviceName(true)
+                .setIncludeDeviceName(false)
                 .addServiceUuid(new ParcelUuid(SERVICE_UUID))
                 .build();
 
-        advertiser.startAdvertising(settings, data, advertiseCallback);
+        AdvertiseData scanResponse = new AdvertiseData.Builder()
+                .setIncludeDeviceName(true)
+                .build();
+
+        advertiser.startAdvertising(settings, data, scanResponse, advertiseCallback);
         Log.d(TAG, "BLE GATT Server advertising started...");
     }
 

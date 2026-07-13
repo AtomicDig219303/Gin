@@ -45,6 +45,8 @@ public class SettingsActivity extends Activity {
                     switchTransport();
                 } else if (position == 1) {
                     cycleModelPreset();
+                } else if (position == 2) {
+                    toggleChatMode();
                 }
             }
         });
@@ -80,6 +82,24 @@ public class SettingsActivity extends Activity {
         adapter.notifyDataSetChanged();
     }
 
+    private void toggleChatMode() {
+        boolean isChatMode = prefs.getBoolean("is_chat_mode", true);
+        boolean newMode = !isChatMode;
+
+        audioManager.playSoundEffect(AudioManager.FX_KEY_CLICK);
+
+        // Save locally
+        prefs.edit().putBoolean("is_chat_mode", newMode).apply();
+
+        // Send control message to phone
+        GinConnectionManager mgr = GinConnectionManager.getInstance(this);
+        String payload = "SET_CHAT_MODE:" + newMode;
+        mgr.sendData(payload.getBytes(), com.custom.gin.transport.GinTransport.TYPE_CONTROL);
+
+        Log.d(TAG, "Chat mode toggled to " + newMode);
+        adapter.notifyDataSetChanged();
+    }
+
     private class SettingsCardAdapter extends CardScrollAdapter {
         @Override
         public int getPosition(Object item) {
@@ -88,7 +108,7 @@ public class SettingsActivity extends Activity {
 
         @Override
         public int getCount() {
-            return 2;
+            return 3;
         }
 
         @Override
@@ -127,6 +147,16 @@ public class SettingsActivity extends Activity {
 
                 card.setText("Model: " + name);
                 card.setFootnote("Tap to cycle to next preset");
+            } else if (position == 2) {
+                // Chat Mode Card
+                boolean isChatMode = prefs.getBoolean("is_chat_mode", true);
+                if (isChatMode) {
+                    card.setText("Mode: Chat");
+                    card.setFootnote("Tap to switch to Quick Mode");
+                } else {
+                    card.setText("Mode: Quick");
+                    card.setFootnote("Tap to switch to Chat Mode");
+                }
             }
 
             return card.getView(convertView, parent);
