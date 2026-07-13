@@ -1,6 +1,6 @@
 # Gin
 
-A client-server assistant that hooks your old Google Glass (GDK, XE24, API 19) up to an LLM through your phone. Talk to it or show it something, and it talks back on the HUD.
+Bringing an LLM assistant to your pair of Google Glass
 
 You record or snap a photo on Glass, it gets shipped over Bluetooth to a companion app running on your phone, the phone fires the request off to whichever provider you've configured (Gemini, OpenAI, Claude, or your own self-hosted endpoint), and the answer comes back to render on the HUD and get read out loud.
 
