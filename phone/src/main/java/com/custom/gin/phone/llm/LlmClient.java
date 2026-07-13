@@ -99,7 +99,7 @@ public class LlmClient {
             java.util.List<ChatMessage> messages = new java.util.ArrayList<>();
             messages.add(new ChatMessage(ChatMessage.Role.USER, "Transcribe this audio exactly as spoken. Return only the transcription text.", wavBytes, "audio/wav"));
 
-            Request request = buildGeminiRequest(geminiApiKey, "gemini-2.5-flash", "", messages); // user asked for 3.1-flash-lite, but let's see if 3.1 is available? "gemini-3.1-flash-lite"
+            Request request = buildGeminiRequest(geminiApiKey, "gemini-3.1-flash-lite", "", messages);
 
             client.newCall(request).enqueue(new okhttp3.Callback() {
                 @Override

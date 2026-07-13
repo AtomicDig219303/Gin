@@ -6,8 +6,8 @@ import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
 
+import com.custom.gin.phone.chat.ChatSession;
 import com.custom.gin.phone.llm.LlmClient;
-import com.custom.gin.phone.stt.AudioTranscriber;
 import com.custom.gin.phone.transport.BleServer;
 import com.custom.gin.phone.transport.GinTransport;
 import com.custom.gin.phone.transport.RfcommServer;
@@ -28,7 +28,6 @@ public class GinServerManager implements GinTransport.Listener {
     private final SharedPreferences prefs;
     private final Handler mainHandler;
     private final LlmClient llmClient;
-    private final AudioTranscriber audioTranscriber;
 
     private GinTransport serverTransport;
     private StatusListener statusListener;
@@ -43,7 +42,6 @@ public class GinServerManager implements GinTransport.Listener {
         this.prefs = context.getSharedPreferences("gin_prefs", Context.MODE_PRIVATE);
         this.mainHandler = new Handler(Looper.getMainLooper());
         this.llmClient = new LlmClient();
-        this.audioTranscriber = new AudioTranscriber(this.context);
         this.chatSession = new com.custom.gin.phone.chat.ChatSession();
     }
 
@@ -305,11 +303,18 @@ public class GinServerManager implements GinTransport.Listener {
                         }
                     });
         } else {
-            addLog("Transcribing WAV audio using on-device Vosk STT...");
-            audioTranscriber.transcribeAudio(audioBytes, new AudioTranscriber.Callback() {
+            addLog("Transcribing WAV audio using gemini-3.1-flash-lite...");
+            String geminiApiKey = getApiKeyForProvider("Gemini");
+            if (geminiApiKey.trim().isEmpty()) {
+                addLog("Transcription failed: Gemini API Key is missing.");
+                sendTextResponse(provider, "Error: Please set a Gemini API Key in the Phone Settings to enable cloud transcription for " + provider + ".");
+                return;
+            }
+            
+            llmClient.transcribeAudioWithGemini(audioBytes, geminiApiKey, new LlmClient.Callback() {
                 @Override
                 public void onSuccess(String transcribedText) {
-                    addLog("Local Transcribed Text: \"" + transcribedText + "\"");
+                    addLog("Cloud Transcribed Text: \"" + transcribedText + "\"");
                     com.custom.gin.phone.chat.ChatMessage msg = new com.custom.gin.phone.chat.ChatMessage(
                             com.custom.gin.phone.chat.ChatMessage.Role.USER, transcribedText);
                     chatSession.addMessage(msg);
@@ -332,7 +337,7 @@ public class GinServerManager implements GinTransport.Listener {
 
                 @Override
                 public void onFailure(String errorMessage) {
-                    addLog("Local transcription failed: " + errorMessage);
+                    addLog("Cloud transcription failed: " + errorMessage);
                     sendTextResponse(provider, "Transcription failed: " + errorMessage);
                 }
             });
