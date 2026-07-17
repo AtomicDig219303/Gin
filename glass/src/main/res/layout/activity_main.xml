@@ -10,10 +10,10 @@
         android:id="@+id/status_layout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:paddingLeft="40dp"
-        android:paddingTop="40dp"
-        android:paddingRight="40dp"
-        android:paddingBottom="40dp"
+        android:paddingLeft="20dp"
+        android:paddingTop="20dp"
+        android:paddingRight="20dp"
+        android:paddingBottom="20dp"
         android:visibility="visible">
 
         <ImageView
@@ -45,10 +45,10 @@
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="horizontal"
-        android:paddingLeft="40dp"
-        android:paddingTop="40dp"
-        android:paddingRight="40dp"
-        android:paddingBottom="40dp"
+        android:paddingLeft="20dp"
+        android:paddingTop="20dp"
+        android:paddingRight="20dp"
+        android:paddingBottom="20dp"
         android:visibility="gone">
 
         <!-- Left Sidebar (Icon + Custom Scrollbar) -->

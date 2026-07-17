@@ -3,6 +3,7 @@ package com.custom.gin;
 import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.media.AudioFormat;
 import android.media.AudioManager;
 import android.media.AudioRecord;
@@ -488,6 +489,11 @@ public class MainActivity extends Activity
             @Override
             public void run() {
                 statusText.setText("Sending...");
+                SharedPreferences p = getSharedPreferences("gin_prefs", Context.MODE_PRIVATE);
+                int activeIndex = p.getInt("active_preset_index", 1);
+                String activeProvider = p.getString("preset_provider_" + activeIndex, "custom");
+                setProviderIcon(statusIcon, activeProvider);
+
                 if (mIndeterminateSlider != null) {
                     mIndeterminateSlider.hide();
                 }
@@ -539,6 +545,12 @@ public class MainActivity extends Activity
                     String cmd = new String(data);
                     if ("THINKING".equals(cmd)) {
                         statusText.setText("Thinking...");
+                        
+                        SharedPreferences p = getSharedPreferences("gin_prefs", Context.MODE_PRIVATE);
+                        int activeIndex = p.getInt("active_preset_index", 1);
+                        String activeProvider = p.getString("preset_provider_" + activeIndex, "custom");
+                        setProviderIcon(statusIcon, activeProvider);
+
                         if (mIndeterminateSlider == null) {
                             mIndeterminateSlider = mSlider.startIndeterminate();
                             mIndeterminateSlider.show();
@@ -598,7 +610,17 @@ public class MainActivity extends Activity
             return;
         }
 
-        String resName = "ic_" + provider.toLowerCase();
+        String resName;
+        if ("Gemini".equalsIgnoreCase(provider)) {
+            resName = "ic_aimodel_gemini_64x64";
+        } else if ("OpenAI GPT".equalsIgnoreCase(provider)) {
+            resName = "ic_aimodel_openai_64x64";
+        } else if ("Anthropic Claude".equalsIgnoreCase(provider)) {
+            resName = "ic_aimodel_claude_64x64";
+        } else {
+            resName = "ic_aimodel_generic_64x64";
+        }
+
         int resId = getResources().getIdentifier(resName, "drawable", getPackageName());
         if (resId != 0) {
             imageView.setImageResource(resId);

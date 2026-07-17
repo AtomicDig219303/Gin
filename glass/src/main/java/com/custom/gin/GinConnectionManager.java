@@ -134,7 +134,21 @@ public class GinConnectionManager implements GinTransport.Listener {
             String cmd = new String(data);
             if (cmd.startsWith("SYNC_PRESETS:")) {
                 String[] parts = cmd.substring("SYNC_PRESETS:".length()).split("\\|");
-                if (parts.length >= 4) {
+                if (parts.length >= 7) {
+                    try {
+                        prefs.edit()
+                                .putInt("active_preset_index", Integer.parseInt(parts[0]))
+                                .putString("preset_name_1", parts[1])
+                                .putString("preset_name_2", parts[2])
+                                .putString("preset_name_3", parts[3])
+                                .putString("preset_provider_1", parts[4])
+                                .putString("preset_provider_2", parts[5])
+                                .putString("preset_provider_3", parts[6])
+                                .apply();
+                    } catch (Exception e) {
+                        Log.e(TAG, "Error parsing presets", e);
+                    }
+                } else if (parts.length >= 4) {
                     try {
                         prefs.edit()
                                 .putInt("active_preset_index", Integer.parseInt(parts[0]))

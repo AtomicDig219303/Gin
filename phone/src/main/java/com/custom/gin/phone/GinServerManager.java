@@ -162,7 +162,11 @@ public class GinServerManager implements GinTransport.Listener {
             String name2 = prefs.getString("preset_name_2", "Preset 2");
             String name3 = prefs.getString("preset_name_3", "Preset 3");
 
-            String payload = "SYNC_PRESETS:" + activeIndex + "|" + name1 + "|" + name2 + "|" + name3;
+            String p1 = prefs.getString("preset_provider_1", "Gemini");
+            String p2 = prefs.getString("preset_provider_2", "Gemini");
+            String p3 = prefs.getString("preset_provider_3", "Gemini");
+
+            String payload = "SYNC_PRESETS:" + activeIndex + "|" + name1 + "|" + name2 + "|" + name3 + "|" + p1 + "|" + p2 + "|" + p3;
             if (serverTransport != null && isConnected) {
                 serverTransport.sendData(payload.getBytes("UTF-8"), GinTransport.TYPE_CONTROL);
                 addLog("Sent preset sync to Glass: " + payload);
