@@ -8,7 +8,6 @@ import android.util.Log;
 
 import com.custom.gin.phone.chat.ChatSession;
 import com.custom.gin.phone.llm.LlmClient;
-import com.custom.gin.phone.transport.BleServer;
 import com.custom.gin.phone.transport.GinTransport;
 import com.custom.gin.phone.transport.RfcommServer;
 
@@ -91,14 +90,8 @@ public class GinServerManager implements GinTransport.Listener {
         isRunning = true;
         addLog("Starting server...");
 
-        boolean useBle = prefs.getBoolean("use_ble", false);
-        if (useBle) {
-            serverTransport = new BleServer(context, this);
-            addLog("Using BLE transport");
-        } else {
-            serverTransport = new RfcommServer(this);
-            addLog("Using RFCOMM transport");
-        }
+        serverTransport = new RfcommServer(this);
+        addLog("Using RFCOMM transport");
 
         serverTransport.start();
         notifyState();
@@ -162,9 +155,9 @@ public class GinServerManager implements GinTransport.Listener {
             String name2 = prefs.getString("preset_name_2", "Preset 2");
             String name3 = prefs.getString("preset_name_3", "Preset 3");
 
-            String p1 = prefs.getString("preset_provider_1", "Gemini");
-            String p2 = prefs.getString("preset_provider_2", "Gemini");
-            String p3 = prefs.getString("preset_provider_3", "Gemini");
+            String p1 = prefs.getString("preset_provider_1", GinConstants.PROVIDER_GEMINI);
+            String p2 = prefs.getString("preset_provider_2", GinConstants.PROVIDER_GEMINI);
+            String p3 = prefs.getString("preset_provider_3", GinConstants.PROVIDER_GEMINI);
 
             String payload = "SYNC_PRESETS:" + activeIndex + "|" + name1 + "|" + name2 + "|" + name3 + "|" + p1 + "|" + p2 + "|" + p3;
             if (serverTransport != null && isConnected) {
@@ -192,7 +185,7 @@ public class GinServerManager implements GinTransport.Listener {
             addLog("Received audio from Glass: " + data.length + " bytes");
             handleAudioQuery(data);
         } else if (type == GinTransport.TYPE_CONTROL) {
-            handleControlMessage(new String(data));
+            handleControlMessage(new String(data, java.nio.charset.StandardCharsets.UTF_8));
         }
     }
 
@@ -224,11 +217,11 @@ public class GinServerManager implements GinTransport.Listener {
     }
 
     private String getApiKeyForProvider(String provider) {
-        if ("Gemini".equalsIgnoreCase(provider)) {
+        if (GinConstants.PROVIDER_GEMINI.equalsIgnoreCase(provider)) {
             return prefs.getString("api_key_gemini", "");
-        } else if ("OpenAI GPT".equalsIgnoreCase(provider)) {
+        } else if (GinConstants.PROVIDER_OPENAI.equalsIgnoreCase(provider)) {
             return prefs.getString("api_key_openai", "");
-        } else if ("Anthropic Claude".equalsIgnoreCase(provider)) {
+        } else if (GinConstants.PROVIDER_ANTHROPIC.equalsIgnoreCase(provider)) {
             return prefs.getString("api_key_anthropic", "");
         }
         return "";
@@ -238,15 +231,11 @@ public class GinServerManager implements GinTransport.Listener {
         addLog("Raw LLM response: " + responseText);
 
         // Strip out <thinking> tags before sending back to Glass
-        String cleanText = responseText;
-        int thinkStart = cleanText.indexOf("<thinking>");
-        int thinkEnd = cleanText.indexOf("</thinking>");
-        if (thinkStart != -1 && thinkEnd != -1 && thinkEnd > thinkStart) {
-            cleanText = cleanText.substring(0, thinkStart) + cleanText.substring(thinkEnd + "</thinking>".length());
-            cleanText = cleanText.trim();
-        } else if (thinkStart != -1) {
-            // Unclosed thinking tag
-            cleanText = cleanText.substring(0, thinkStart).trim();
+        String cleanText = responseText.replaceAll("(?s)<thinking>.*?</thinking>", "").trim();
+        // Handle unclosed thinking tag (model was cut off)
+        int unclosedStart = cleanText.indexOf("<thinking>");
+        if (unclosedStart != -1) {
+            cleanText = cleanText.substring(0, unclosedStart).trim();
         }
 
         // Ensure there is something to say
@@ -257,6 +246,9 @@ public class GinServerManager implements GinTransport.Listener {
         // Add assistant response to history
         getActiveChatSession().addMessage(new com.custom.gin.phone.chat.ChatMessage(
                 com.custom.gin.phone.chat.ChatMessage.Role.ASSISTANT, responseText));
+
+        // Free media bytes from older messages to prevent OOM
+        getActiveChatSession().clearMediaFromHistory();
 
         sendTextResponse(provider, cleanText);
     }
@@ -275,7 +267,7 @@ public class GinServerManager implements GinTransport.Listener {
         getActiveChatSession().addMessage(msg);
 
         int activeIndex = prefs.getInt("active_preset_index", 1);
-        final String provider = prefs.getString("preset_provider_" + activeIndex, "Gemini");
+        final String provider = prefs.getString("preset_provider_" + activeIndex, GinConstants.PROVIDER_GEMINI);
         String modelName = prefs.getString("preset_model_" + activeIndex, "gemini-1.5-flash");
         String apiKey = getApiKeyForProvider(provider);
         String customUrl = prefs.getString("custom_url", "");
@@ -305,7 +297,7 @@ public class GinServerManager implements GinTransport.Listener {
         }
 
         int activeIndex = prefs.getInt("active_preset_index", 1);
-        final String provider = prefs.getString("preset_provider_" + activeIndex, "Gemini");
+        final String provider = prefs.getString("preset_provider_" + activeIndex, GinConstants.PROVIDER_GEMINI);
         final String modelName = prefs.getString("preset_model_" + activeIndex, "gemini-1.5-flash");
         final String apiKey = getApiKeyForProvider(provider);
         final String customUrl = prefs.getString("custom_url", "");
@@ -333,7 +325,7 @@ public class GinServerManager implements GinTransport.Listener {
                     });
         } else {
             addLog("Transcribing WAV audio using gemini-3.1-flash-lite...");
-            String geminiApiKey = getApiKeyForProvider("Gemini");
+            String geminiApiKey = getApiKeyForProvider(GinConstants.PROVIDER_GEMINI);
             if (geminiApiKey.trim().isEmpty()) {
                 addLog("Transcription failed: Gemini API Key is missing.");
                 sendTextResponse(provider, "Error: Please set a Gemini API Key in the Phone Settings to enable cloud transcription for " + provider + ".");

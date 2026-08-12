@@ -9,6 +9,8 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class RfcommServer implements GinTransport {
     private static final String TAG = "RfcommServer";
@@ -94,12 +96,15 @@ public class RfcommServer implements GinTransport {
     }
 
     private synchronized void connectionLost() {
+        boolean wasRunning = isRunning;
         isConnected = false;
         listener.onDisconnected();
-        if (isRunning) {
+        if (wasRunning) {
             Log.d(TAG, "Connection lost, restarting server...");
             stop();
-            start();
+            isRunning = true;
+            acceptThread = new AcceptThread();
+            acceptThread.start();
         }
     }
 
@@ -153,6 +158,7 @@ public class RfcommServer implements GinTransport {
         private final BluetoothSocket socket;
         private final InputStream inputStream;
         private final OutputStream outputStream;
+        private final ExecutorService writeExecutor = Executors.newSingleThreadExecutor();
 
         public ConnectedThread(BluetoothSocket socket) {
             this.socket = socket;
@@ -238,39 +244,38 @@ public class RfcommServer implements GinTransport {
         }
 
         public void write(final byte[] data, final byte type) {
-            new Thread(new Runnable() {
+            writeExecutor.execute(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        synchronized (ConnectedThread.this) {
-                            int length = data.length;
-                            byte[] header = new byte[6];
-                            header[0] = MAGIC_BYTE;
-                            header[1] = type;
-                            header[2] = (byte) ((length >> 24) & 0xFF);
-                            header[3] = (byte) ((length >> 16) & 0xFF);
-                            header[4] = (byte) ((length >> 8) & 0xFF);
-                            header[5] = (byte) (length & 0xFF);
+                        int length = data.length;
+                        byte[] header = new byte[6];
+                        header[0] = MAGIC_BYTE;
+                        header[1] = type;
+                        header[2] = (byte) ((length >> 24) & 0xFF);
+                        header[3] = (byte) ((length >> 16) & 0xFF);
+                        header[4] = (byte) ((length >> 8) & 0xFF);
+                        header[5] = (byte) (length & 0xFF);
 
-                            outputStream.write(header);
-                            
-                            int chunkSize = 4096;
-                            for (int i = 0; i < length; i += chunkSize) {
-                                int size = Math.min(chunkSize, length - i);
-                                outputStream.write(data, i, size);
-                                listener.onProgress(i + size, length);
-                            }
-                            outputStream.flush();
+                        outputStream.write(header);
+                        
+                        int chunkSize = 4096;
+                        for (int i = 0; i < length; i += chunkSize) {
+                            int size = Math.min(chunkSize, length - i);
+                            outputStream.write(data, i, size);
+                            listener.onProgress(i + size, length);
                         }
+                        outputStream.flush();
                     } catch (IOException e) {
                         Log.e(TAG, "Error writing data", e);
                         listener.onError("Failed to send data");
                     }
                 }
-            }).start();
+            });
         }
 
         public void cancel() {
+            writeExecutor.shutdownNow();
             try {
                 socket.close();
             } catch (IOException e) {

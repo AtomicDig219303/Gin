@@ -9,7 +9,7 @@ public class ChatMessage {
 
     private final Role role;
     private final String content;
-    private final byte[] mediaBytes;
+    private byte[] mediaBytes;
     private final String mimeType;
 
     public ChatMessage(Role role, String content) {
@@ -40,5 +40,10 @@ public class ChatMessage {
 
     public String getMimeType() {
         return mimeType;
+    }
+
+    /** Release media bytes to free memory. Keeps mimeType for metadata. */
+    public void clearMedia() {
+        this.mediaBytes = null;
     }
 }

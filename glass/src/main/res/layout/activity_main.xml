@@ -126,6 +126,8 @@
         android:textColor="@android:color/white"
         android:textSize="80sp"
         android:fontFamily="sans-serif-light"
+        android:clickable="false"
+        android:focusable="false"
         android:visibility="gone" />
 
 </RelativeLayout>

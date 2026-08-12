@@ -121,11 +121,12 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
     }
 
     private void updateConfigSummary() {
-        boolean useBle = prefs.getBoolean("use_ble", false);
-        String provider = prefs.getString("provider", "Gemini");
-        String model = prefs.getString("model_name", "gemini-1.5-flash");
+        int activeIndex = prefs.getInt("active_preset_index", 1);
+        String provider = prefs.getString("preset_provider_" + activeIndex, "Gemini");
+        String model = prefs.getString("preset_model_" + activeIndex, "gemini-1.5-flash");
+        String presetName = prefs.getString("preset_name_" + activeIndex, "Preset " + activeIndex);
         
-        String summary = "Config: " + (useBle ? "BLE" : "RFCOMM") + " | " + provider + " | " + model;
+        String summary = "RFCOMM | " + presetName + " (" + provider + " / " + model + ")";
         textConfigSummary.setText(summary);
     }
 
@@ -134,6 +135,12 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             permissionsNeeded.add(Manifest.permission.RECORD_AUDIO);
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissionsNeeded.add(Manifest.permission.POST_NOTIFICATIONS);
+            }
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -172,7 +179,7 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
                 }
             }
             if (allGranted && !serverManager.isRunning()) {
-                serverManager.startServer();
+                startServerService();
             }
         }
     }
@@ -197,17 +204,9 @@ public class MainActivity extends AppCompatActivity implements GinServerManager.
 
     @Override
     public void onLogAdded(String logLine) {
-        // Only show significant logs as SYSTEM messages or ASSISTANT/USER messages if they parse out.
-        // For simplicity, we just add system logs.
-        if (logLine.startsWith("Raw LLM response:") || logLine.startsWith("Local Transcribed Text:")) {
-            // we skip these because we added actual ChatMessages in GinServerManager
-            // Wait, GinServerManager adds them to its ChatSession but doesn't expose them to MainActivity directly unless we ask.
-            // Let's just fetch the whole list from GinServerManager to sync? No, GinServerManager doesn't expose its chatSession.
-            // It's easier to just add them directly here as SYSTEM logs.
-        }
-        
-        displayMessages.add(new ChatMessage(ChatMessage.Role.SYSTEM, logLine));
-        chatAdapter.setMessages(displayMessages);
+        ChatMessage msg = new ChatMessage(ChatMessage.Role.SYSTEM, logLine);
+        displayMessages.add(msg);
+        chatAdapter.addMessage(msg);
         recyclerChat.scrollToPosition(displayMessages.size() - 1);
     }
 

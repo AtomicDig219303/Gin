@@ -14,7 +14,6 @@ import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
 
 public class SettingsActivity extends AppCompatActivity {
-    private Spinner spinnerTransport;
     private EditText editApiKeyGemini;
     private EditText editApiKeyOpenai;
     private EditText editApiKeyAnthropic;
@@ -61,7 +60,6 @@ public class SettingsActivity extends AppCompatActivity {
         prefs = getSharedPreferences("gin_prefs", MODE_PRIVATE);
 
         // Bind global views
-        spinnerTransport = findViewById(R.id.spinner_transport);
         editApiKeyGemini = findViewById(R.id.edit_api_key_gemini);
         editApiKeyOpenai = findViewById(R.id.edit_api_key_openai);
         editApiKeyAnthropic = findViewById(R.id.edit_api_key_anthropic);
@@ -103,12 +101,13 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void setupSpinners() {
-        String[] transports = {"Bluetooth Classic (RFCOMM)", "Bluetooth Low Energy (BLE)"};
-        ArrayAdapter<String> transportAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, transports);
-        transportAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        spinnerTransport.setAdapter(transportAdapter);
 
-        String[] providers = {"Gemini", "Anthropic Claude", "OpenAI GPT", "Custom Self-Hosted"};
+        String[] providers = {
+                GinConstants.PROVIDER_GEMINI,
+                GinConstants.PROVIDER_ANTHROPIC,
+                GinConstants.PROVIDER_OPENAI,
+                GinConstants.PROVIDER_CUSTOM
+        };
         ArrayAdapter<String> providerAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, providers);
         providerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
         
@@ -126,8 +125,6 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void loadSettings() {
-        boolean useBle = prefs.getBoolean("use_ble", false);
-        spinnerTransport.setSelection(useBle ? 1 : 0);
 
         editApiKeyGemini.setText(prefs.getString("api_key_gemini", ""));
         editApiKeyOpenai.setText(prefs.getString("api_key_openai", ""));
@@ -144,11 +141,11 @@ public class SettingsActivity extends AppCompatActivity {
     private void loadPreset(int index, EditText name, Spinner provider, EditText model, Spinner reasoning, Switch audio) {
         name.setText(prefs.getString("preset_name_" + index, "Preset " + index));
         
-        String provStr = prefs.getString("preset_provider_" + index, "Gemini");
+        String provStr = prefs.getString("preset_provider_" + index, GinConstants.PROVIDER_GEMINI);
         int providerIndex = 0;
-        if ("Anthropic Claude".equals(provStr)) providerIndex = 1;
-        else if ("OpenAI GPT".equals(provStr)) providerIndex = 2;
-        else if ("Custom Self-Hosted".equals(provStr)) providerIndex = 3;
+        if (GinConstants.PROVIDER_ANTHROPIC.equals(provStr)) providerIndex = 1;
+        else if (GinConstants.PROVIDER_OPENAI.equals(provStr)) providerIndex = 2;
+        else if (GinConstants.PROVIDER_CUSTOM.equals(provStr)) providerIndex = 3;
         provider.setSelection(providerIndex);
 
         model.setText(prefs.getString("preset_model_" + index, "gemini-1.5-flash"));
@@ -161,9 +158,6 @@ public class SettingsActivity extends AppCompatActivity {
 
     private void saveSettings() {
         SharedPreferences.Editor editor = prefs.edit();
-        
-        boolean useBle = spinnerTransport.getSelectedItemPosition() == 1;
-        editor.putBoolean("use_ble", useBle);
 
         editor.putString("api_key_gemini", editApiKeyGemini.getText().toString().trim());
         editor.putString("api_key_openai", editApiKeyOpenai.getText().toString().trim());

@@ -13,6 +13,7 @@ import android.widget.AdapterView;
 import com.google.android.glass.widget.CardBuilder;
 import com.google.android.glass.widget.CardScrollAdapter;
 import com.google.android.glass.widget.CardScrollView;
+import com.google.android.glass.media.Sounds;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -42,33 +43,21 @@ public class SettingsActivity extends Activity {
             @Override
             public void onItemClick(AdapterView<?> parent, View view, int position, long id) {
                 if (position == 0) {
-                    switchTransport();
-                } else if (position == 1) {
                     cycleModelPreset();
-                } else if (position == 2) {
+                } else if (position == 1) {
                     toggleChatMode();
                 }
             }
         });
     }
 
-    private void switchTransport() {
-        GinConnectionManager mgr = GinConnectionManager.getInstance(this);
-        String current = mgr.getCurrentTransportType();
-        String newType = "BLE".equals(current) ? "RFCOMM" : "BLE";
 
-        audioManager.playSoundEffect(AudioManager.FX_KEY_CLICK);
-        mgr.selectTransport(newType);
-
-        Log.d(TAG, "Transport switched to " + newType);
-        adapter.notifyDataSetChanged();
-    }
 
     private void cycleModelPreset() {
         int currentIdx = prefs.getInt("active_preset_index", 1);
         int nextIdx = (currentIdx % 3) + 1; // Cycles 1 -> 2 -> 3 -> 1
 
-        audioManager.playSoundEffect(AudioManager.FX_KEY_CLICK);
+        audioManager.playSoundEffect(Sounds.SELECTED);
 
         // Save locally
         prefs.edit().putInt("active_preset_index", nextIdx).apply();
@@ -86,7 +75,7 @@ public class SettingsActivity extends Activity {
         boolean isChatMode = prefs.getBoolean("is_chat_mode", true);
         boolean newMode = !isChatMode;
 
-        audioManager.playSoundEffect(AudioManager.FX_KEY_CLICK);
+        audioManager.playSoundEffect(Sounds.SELECTED);
 
         // Save locally
         prefs.edit().putBoolean("is_chat_mode", newMode).apply();
@@ -101,6 +90,15 @@ public class SettingsActivity extends Activity {
     }
 
     private class SettingsCardAdapter extends CardScrollAdapter {
+        private final CardBuilder[] mCards;
+
+        public SettingsCardAdapter() {
+            mCards = new CardBuilder[2];
+            for (int i = 0; i < 2; i++) {
+                mCards[i] = new CardBuilder(SettingsActivity.this, CardBuilder.Layout.TEXT);
+            }
+        }
+
         @Override
         public int getPosition(Object item) {
             return AdapterView.INVALID_POSITION;
@@ -108,7 +106,7 @@ public class SettingsActivity extends Activity {
 
         @Override
         public int getCount() {
-            return 3;
+            return 2;
         }
 
         @Override
@@ -128,26 +126,16 @@ public class SettingsActivity extends Activity {
 
         @Override
         public View getView(int position, View convertView, ViewGroup parent) {
-            CardBuilder card = new CardBuilder(SettingsActivity.this, CardBuilder.Layout.TEXT);
+            CardBuilder card = mCards[position];
 
             if (position == 0) {
-                // Transport Card
-                GinConnectionManager mgr = GinConnectionManager.getInstance(SettingsActivity.this);
-                String current = mgr.getCurrentTransportType();
-                card.setText("Transport: " + current);
-                if ("BLE".equals(current)) {
-                    card.setFootnote("Tap to switch to RFCOMM");
-                } else {
-                    card.setFootnote("Tap to switch to BLE");
-                }
-            } else if (position == 1) {
                 // Model Preset Card
                 int activeIndex = prefs.getInt("active_preset_index", 1);
                 String name = prefs.getString("preset_name_" + activeIndex, "Preset " + activeIndex);
 
                 card.setText("Model: " + name);
                 card.setFootnote("Tap to cycle to next preset");
-            } else if (position == 2) {
+            } else if (position == 1) {
                 // Chat Mode Card
                 boolean isChatMode = prefs.getBoolean("is_chat_mode", true);
                 if (isChatMode) {

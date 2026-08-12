@@ -14,6 +14,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 public class RfcommTransport implements GinTransport {
     private static final String TAG = "RfcommTransport";
@@ -170,13 +172,16 @@ public class RfcommTransport implements GinTransport {
     }
 
     private synchronized void connectionLost() {
+        boolean wasRunning = isRunning;
         isConnected = false;
         listener.onDisconnected();
-        if (isRunning) {
+        if (wasRunning) {
             Log.d(TAG, "Connection lost, attempting reconnect...");
-            // Automatically attempt reconnect
             stop();
-            start();
+            isRunning = true;
+            retryCount = 0;
+            currentDeviceIndex = 0;
+            connectToNextCandidate();
         }
     }
 
@@ -230,6 +235,7 @@ public class RfcommTransport implements GinTransport {
         private final BluetoothSocket socket;
         private final InputStream inputStream;
         private final OutputStream outputStream;
+        private final ExecutorService writeExecutor = Executors.newSingleThreadExecutor();
 
         public ConnectedThread(BluetoothSocket socket) {
             this.socket = socket;
@@ -316,40 +322,39 @@ public class RfcommTransport implements GinTransport {
         }
 
         public void write(final byte[] data, final byte type) {
-            new Thread(new Runnable() {
+            writeExecutor.execute(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        synchronized (ConnectedThread.this) {
-                            int length = data.length;
-                            byte[] header = new byte[6];
-                            header[0] = MAGIC_BYTE;
-                            header[1] = type;
-                            header[2] = (byte) ((length >> 24) & 0xFF);
-                            header[3] = (byte) ((length >> 16) & 0xFF);
-                            header[4] = (byte) ((length >> 8) & 0xFF);
-                            header[5] = (byte) (length & 0xFF);
+                        int length = data.length;
+                        byte[] header = new byte[6];
+                        header[0] = MAGIC_BYTE;
+                        header[1] = type;
+                        header[2] = (byte) ((length >> 24) & 0xFF);
+                        header[3] = (byte) ((length >> 16) & 0xFF);
+                        header[4] = (byte) ((length >> 8) & 0xFF);
+                        header[5] = (byte) (length & 0xFF);
 
-                            outputStream.write(header);
-                            
-                            // Write in chunks to show progress
-                            int chunkSize = 4096;
-                            for (int i = 0; i < length; i += chunkSize) {
-                                int size = Math.min(chunkSize, length - i);
-                                outputStream.write(data, i, size);
-                                listener.onProgress(i + size, length);
-                            }
-                            outputStream.flush();
+                        outputStream.write(header);
+                        
+                        // Write in chunks to show progress
+                        int chunkSize = 4096;
+                        for (int i = 0; i < length; i += chunkSize) {
+                            int size = Math.min(chunkSize, length - i);
+                            outputStream.write(data, i, size);
+                            listener.onProgress(i + size, length);
                         }
+                        outputStream.flush();
                     } catch (IOException e) {
                         Log.e(TAG, "Error writing data", e);
                         listener.onError("Failed to send data");
                     }
                 }
-            }).start();
+            });
         }
 
         public void cancel() {
+            writeExecutor.shutdownNow();
             try {
                 socket.close();
             } catch (IOException e) {

@@ -23,4 +23,15 @@ public class ChatSession {
     public void clear() {
         messages.clear();
     }
+
+    /**
+     * Releases media byte arrays from all messages except the most recent one.
+     * Call after sending messages to the LLM API to prevent OOM from accumulated
+     * audio/image data across many conversation turns.
+     */
+    public void clearMediaFromHistory() {
+        for (int i = 0; i < messages.size() - 1; i++) {
+            messages.get(i).clearMedia();
+        }
+    }
 }

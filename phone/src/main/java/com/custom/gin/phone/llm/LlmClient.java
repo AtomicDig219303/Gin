@@ -1,6 +1,7 @@
 package com.custom.gin.phone.llm;
 
 import com.custom.gin.phone.chat.ChatMessage;
+import com.custom.gin.phone.GinConstants;
 
 import android.util.Base64;
 import android.util.Log;
@@ -33,7 +34,7 @@ public class LlmClient {
     public LlmClient() {
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(120, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .build();
     }
@@ -46,13 +47,13 @@ public class LlmClient {
         try {
             Request request = null;
 
-            if ("Gemini".equalsIgnoreCase(provider)) {
+            if (GinConstants.PROVIDER_GEMINI.equalsIgnoreCase(provider)) {
                 request = buildGeminiRequest(apiKey, modelName, systemPrompt, messages);
-            } else if ("Anthropic Claude".equalsIgnoreCase(provider)) {
+            } else if (GinConstants.PROVIDER_ANTHROPIC.equalsIgnoreCase(provider)) {
                 request = buildAnthropicRequest(apiKey, modelName, systemPrompt, messages);
-            } else if ("OpenAI GPT".equalsIgnoreCase(provider)) {
+            } else if (GinConstants.PROVIDER_OPENAI.equalsIgnoreCase(provider)) {
                 request = buildOpenAiRequest(apiKey, modelName, systemPrompt, messages);
-            } else if ("Custom Self-Hosted".equalsIgnoreCase(provider)) {
+            } else if (GinConstants.PROVIDER_CUSTOM.equalsIgnoreCase(provider)) {
                 request = buildCustomRequest(customUrl, apiKey, modelName, systemPrompt, messages);
             }
 
@@ -71,19 +72,23 @@ public class LlmClient {
 
                 @Override
                 public void onResponse(Call call, Response response) throws IOException {
-                    String body = response.body() != null ? response.body().string() : "";
-                    if (!response.isSuccessful()) {
-                        Log.e(TAG, "LLM Response unsuccessful: " + response.code() + " - " + body);
-                        callback.onFailure("HTTP " + response.code() + ": " + body);
-                        return;
-                    }
-
                     try {
-                        String extractedText = parseLlmResponse(provider, body);
-                        callback.onSuccess(extractedText);
-                    } catch (Exception e) {
-                        Log.e(TAG, "Failed to parse response body", e);
-                        callback.onFailure("Parse failed: " + e.getMessage());
+                        String body = response.body() != null ? response.body().string() : "";
+                        if (!response.isSuccessful()) {
+                            Log.e(TAG, "LLM Response unsuccessful: " + response.code() + " - " + body);
+                            callback.onFailure("HTTP " + response.code() + ": " + body);
+                            return;
+                        }
+
+                        try {
+                            String extractedText = parseLlmResponse(provider, body);
+                            callback.onSuccess(extractedText);
+                        } catch (Exception e) {
+                            Log.e(TAG, "Failed to parse response body", e);
+                            callback.onFailure("Parse failed: " + e.getMessage());
+                        }
+                    } finally {
+                        response.close();
                     }
                 }
             });
@@ -185,7 +190,7 @@ public class LlmClient {
         JsonObject rootObj = new JsonObject();
         rootObj.addProperty("model", model);
         rootObj.addProperty("system", systemPrompt);
-        rootObj.addProperty("max_tokens", 1024);
+        rootObj.addProperty("max_tokens", 4096);
 
         JsonArray messagesArray = new JsonArray();
         
@@ -283,8 +288,16 @@ public class LlmClient {
     }
 
     private Request buildCustomRequest(String customUrl, String apiKey, String model, String systemPrompt, java.util.List<ChatMessage> messages) {
-        // Assume OpenAI schema compatible URL
-        String url = customUrl.endsWith("/") ? customUrl + "chat/completions" : customUrl + "/chat/completions";
+        String sanitizedUrl = customUrl != null ? customUrl.trim() : "";
+        if (!sanitizedUrl.startsWith("http://") && !sanitizedUrl.startsWith("https://")) {
+            sanitizedUrl = "http://" + sanitizedUrl;
+        }
+        String url;
+        if (sanitizedUrl.endsWith("/chat/completions") || sanitizedUrl.endsWith("chat/completions")) {
+            url = sanitizedUrl;
+        } else {
+            url = sanitizedUrl.endsWith("/") ? sanitizedUrl + "chat/completions" : sanitizedUrl + "/chat/completions";
+        }
 
         JsonObject rootObj = new JsonObject();
         if (model != null && !model.isEmpty()) {
@@ -342,22 +355,36 @@ public class LlmClient {
     private String parseLlmResponse(String provider, String jsonBody) throws Exception {
         JsonObject root = JsonParser.parseString(jsonBody).getAsJsonObject();
 
-        if ("Gemini".equalsIgnoreCase(provider)) {
-            return root.getAsJsonArray("candidates")
-                    .get(0).getAsJsonObject()
-                    .getAsJsonObject("content")
-                    .getAsJsonArray("parts")
-                    .get(0).getAsJsonObject()
-                    .get("text").getAsString();
-        } else if ("Anthropic Claude".equalsIgnoreCase(provider)) {
-            return root.getAsJsonArray("content")
-                    .get(0).getAsJsonObject()
-                    .get("text").getAsString();
-        } else if ("OpenAI GPT".equalsIgnoreCase(provider) || "Custom Self-Hosted".equalsIgnoreCase(provider)) {
-            return root.getAsJsonArray("choices")
-                    .get(0).getAsJsonObject()
-                    .getAsJsonObject("message")
-                    .get("content").getAsString();
+        if (GinConstants.PROVIDER_GEMINI.equalsIgnoreCase(provider)) {
+            JsonArray candidates = root.getAsJsonArray("candidates");
+            if (candidates == null || candidates.size() == 0) {
+                throw new Exception("Empty candidates array from Gemini");
+            }
+            JsonObject content = candidates.get(0).getAsJsonObject().getAsJsonObject("content");
+            if (content == null) {
+                throw new Exception("Missing content object from Gemini");
+            }
+            JsonArray parts = content.getAsJsonArray("parts");
+            if (parts == null || parts.size() == 0) {
+                throw new Exception("Empty parts array from Gemini");
+            }
+            return parts.get(0).getAsJsonObject().get("text").getAsString();
+        } else if (GinConstants.PROVIDER_ANTHROPIC.equalsIgnoreCase(provider)) {
+            JsonArray content = root.getAsJsonArray("content");
+            if (content == null || content.size() == 0) {
+                throw new Exception("Empty content array from Anthropic");
+            }
+            return content.get(0).getAsJsonObject().get("text").getAsString();
+        } else if (GinConstants.PROVIDER_OPENAI.equalsIgnoreCase(provider) || GinConstants.PROVIDER_CUSTOM.equalsIgnoreCase(provider)) {
+            JsonArray choices = root.getAsJsonArray("choices");
+            if (choices == null || choices.size() == 0) {
+                throw new Exception("Empty choices array from " + provider);
+            }
+            JsonObject message = choices.get(0).getAsJsonObject().getAsJsonObject("message");
+            if (message == null) {
+                throw new Exception("Missing message object from " + provider);
+            }
+            return message.get("content").getAsString();
         }
 
         throw new Exception("Unknown provider: " + provider);

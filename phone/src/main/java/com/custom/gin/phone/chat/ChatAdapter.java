@@ -28,6 +28,12 @@ public class ChatAdapter extends RecyclerView.Adapter<ChatAdapter.ChatViewHolder
         notifyDataSetChanged();
     }
 
+    /** Efficiently append a single message without full relayout. */
+    public void addMessage(ChatMessage message) {
+        messages.add(message);
+        notifyItemInserted(messages.size() - 1);
+    }
+
     @NonNull
     @Override
     public ChatViewHolder onCreateViewHolder(@NonNull ViewGroup parent, int viewType) {
@@ -80,10 +86,10 @@ public class ChatAdapter extends RecyclerView.Adapter<ChatAdapter.ChatViewHolder
 
             if (msg.getRole() == ChatMessage.Role.USER) {
                 container.setGravity(Gravity.END);
-                textRole.setTextColor(itemView.getContext().getResources().getColor(android.R.color.holo_blue_dark));
+                textRole.setTextColor(androidx.core.content.ContextCompat.getColor(itemView.getContext(), android.R.color.holo_blue_dark));
             } else {
                 container.setGravity(Gravity.START);
-                textRole.setTextColor(itemView.getContext().getResources().getColor(android.R.color.holo_green_dark));
+                textRole.setTextColor(androidx.core.content.ContextCompat.getColor(itemView.getContext(), android.R.color.holo_green_dark));
             }
         }
     }

@@ -29,6 +29,7 @@ import android.view.MotionEvent;
 import com.google.android.glass.touchpad.Gesture;
 import com.google.android.glass.touchpad.GestureDetector;
 import com.google.android.glass.widget.Slider;
+import com.google.android.glass.media.Sounds;
 
 import java.io.ByteArrayOutputStream;
 import java.util.Locale;
@@ -297,9 +298,7 @@ public class MainActivity extends Activity
         pcmBuffer = new ByteArrayOutputStream();
 
         // Zero-copy optimization: reserve 44 bytes for the WAV header upfront
-        for (int i = 0; i < 44; i++) {
-            pcmBuffer.write(0);
-        }
+        pcmBuffer.write(new byte[44], 0, 44);
 
         try {
             audioRecord = new AudioRecord(
@@ -353,7 +352,7 @@ public class MainActivity extends Activity
         currentDurationTier++;
         int newMaxSec = DURATION_TIERS[currentDurationTier];
 
-        audioManager.playSoundEffect(AudioManager.FX_KEY_CLICK);
+        audioManager.playSoundEffect(Sounds.TAP);
 
         statusText.setText("Recording...");
         timerText.setText(recordDurationSec + "/" + newMaxSec + "s");
@@ -374,6 +373,7 @@ public class MainActivity extends Activity
             try {
                 audioRecord.stop();
             } catch (Exception e) {
+                Log.w(TAG, "audioRecord.stop() failed", e);
             }
             audioRecord.release();
             audioRecord = null;
@@ -383,6 +383,7 @@ public class MainActivity extends Activity
             try {
                 recordingThread.join(500);
             } catch (InterruptedException e) {
+                Log.w(TAG, "recordingThread.join() interrupted", e);
             }
             recordingThread = null;
         }
@@ -393,9 +394,11 @@ public class MainActivity extends Activity
 
         if (pcmBuffer == null || pcmBuffer.size() == 0) {
             statusText.setText("No audio captured");
+            audioManager.playSoundEffect(Sounds.DISALLOWED);
             getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             return;
         }
+        audioManager.playSoundEffect(Sounds.SUCCESS);
 
         final byte[] finalAudio = pcmBuffer.toByteArray();
         pcmBuffer = null;
@@ -489,7 +492,7 @@ public class MainActivity extends Activity
             @Override
             public void run() {
                 statusText.setText("Sending...");
-                SharedPreferences p = getSharedPreferences("gin_prefs", Context.MODE_PRIVATE);
+                SharedPreferences p = getSharedPreferences("gin_glass_prefs", Context.MODE_PRIVATE);
                 int activeIndex = p.getInt("active_preset_index", 1);
                 String activeProvider = p.getString("preset_provider_" + activeIndex, "custom");
                 setProviderIcon(statusIcon, activeProvider);
@@ -542,11 +545,11 @@ public class MainActivity extends Activity
             @Override
             public void run() {
                 if (type == GinTransport.TYPE_CONTROL) {
-                    String cmd = new String(data);
+                    String cmd = new String(data, java.nio.charset.StandardCharsets.UTF_8);
                     if ("THINKING".equals(cmd)) {
                         statusText.setText("Thinking...");
                         
-                        SharedPreferences p = getSharedPreferences("gin_prefs", Context.MODE_PRIVATE);
+                        SharedPreferences p = getSharedPreferences("gin_glass_prefs", Context.MODE_PRIVATE);
                         int activeIndex = p.getInt("active_preset_index", 1);
                         String activeProvider = p.getString("preset_provider_" + activeIndex, "custom");
                         setProviderIcon(statusIcon, activeProvider);
@@ -557,7 +560,7 @@ public class MainActivity extends Activity
                         }
                     }
                 } else if (type == GinTransport.TYPE_TEXT) {
-                    handleTextResponse(new String(data));
+                    handleTextResponse(new String(data, java.nio.charset.StandardCharsets.UTF_8));
                 }
             }
         });
@@ -579,6 +582,7 @@ public class MainActivity extends Activity
 
             responseText.setText(lastResponseText);
             setProviderIcon(responseProviderIcon, provider);
+            audioManager.playSoundEffect(Sounds.SUCCESS);
 
             responseScroll.scrollTo(0, 0);
             mainHandler.postDelayed(new Runnable() {
@@ -625,7 +629,7 @@ public class MainActivity extends Activity
         if (resId != 0) {
             imageView.setImageResource(resId);
         } else {
-            imageView.setImageResource(android.graphics.Color.TRANSPARENT);
+            imageView.setImageDrawable(null);
         }
     }
 
@@ -736,6 +740,7 @@ public class MainActivity extends Activity
                     mIndeterminateSlider = null;
                 }
                 statusText.setText("Error: " + message);
+                audioManager.playSoundEffect(Sounds.DISALLOWED);
                 getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             }
         });

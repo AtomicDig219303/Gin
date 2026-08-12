@@ -108,23 +108,14 @@ public class ProgrammaticCamera implements SurfaceHolder.Callback {
                 @Override
                 public void run() {
                     try {
-                        // Downscale JPEG to max 1024x768 to save Bluetooth transmission time
-                        Bitmap original = BitmapFactory.decodeByteArray(data, 0, data.length);
+                        // Downscale JPEG to save Bluetooth transmission time and RAM
+                        BitmapFactory.Options options = new BitmapFactory.Options();
+                        options.inSampleSize = 2; // Decodes 1280x720 directly to 640x360
+                        
+                        Bitmap original = BitmapFactory.decodeByteArray(data, 0, data.length, options);
                         if (original == null) {
                             callback.onError("Failed to decode picture bytes");
                             return;
-                        }
-
-                        int width = original.getWidth();
-                        int height = original.getHeight();
-                        float scale = Math.min(1024f / width, 768f / height);
-
-                        if (scale < 1.0f) {
-                            Matrix matrix = new Matrix();
-                            matrix.postScale(scale, scale);
-                            Bitmap scaled = Bitmap.createBitmap(original, 0, 0, width, height, matrix, true);
-                            original.recycle();
-                            original = scaled;
                         }
 
                         ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -152,14 +143,14 @@ public class ProgrammaticCamera implements SurfaceHolder.Callback {
                 activeCamera.stopPreview();
                 activeCamera.release();
             } catch (Exception e) {
-                // Ignore
+                Log.w(TAG, "Error stopping/releasing activeCamera", e);
             }
         } else if (camera != null) {
             try {
                 camera.stopPreview();
                 camera.release();
             } catch (Exception e) {
-                // Ignore
+                Log.w(TAG, "Error stopping/releasing camera", e);
             }
         }
         camera = null;
