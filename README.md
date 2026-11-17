@@ -80,7 +80,10 @@ Using bigger models with high reasoning can be tempting, but there's not much va
 
 ### 1. Download and install
 
-Grab the APKs from the [GitHub Releases](https://github.com/AtomicDig219303/Gin/releases) page, then install them onto their respective target devices.
+Grab the prebuilt optimized APKs directly from this fork or the [GitHub Releases](https://github.com/AtomicDig219303/Gin/releases) page, then install them onto their respective target devices:
+
+- [**Download `Gin-Glass.apk`** (41 KB — Android 4.4.2 / Google Glass XE24)](https://github.com/AtomicDig219303/Gin/raw/main/releases/Gin-Glass.apk)
+- [**Download `Gin-Phone.apk`** (1.86 MB — Android 8.0 to Android 15)](https://github.com/AtomicDig219303/Gin/raw/main/releases/Gin-Phone.apk)
 
 ### 2. Connect
 
