@@ -5,6 +5,8 @@ import android.bluetooth.BluetoothServerSocket;
 import android.bluetooth.BluetoothSocket;
 import android.util.Log;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -16,13 +18,14 @@ public class RfcommServer implements GinTransport {
     private static final String TAG = "RfcommServer";
     private static final UUID GIN_UUID = UUID.fromString("8ce255c0-200a-11eb-adc1-0242ac120002");
     private static final byte MAGIC_BYTE = 0x19;
+    private static final int STREAM_BUFFER_SIZE = 8192;
 
     private final BluetoothAdapter bluetoothAdapter;
     private final Listener listener;
     private AcceptThread acceptThread;
     private ConnectedThread connectedThread;
-    private boolean isRunning = false;
-    private boolean isConnected = false;
+    private volatile boolean isRunning = false;
+    private volatile boolean isConnected = false;
 
     public RfcommServer(Listener listener) {
         this.listener = listener;
@@ -32,14 +35,21 @@ public class RfcommServer implements GinTransport {
     @Override
     public synchronized void start() {
         if (isRunning) return;
-        isRunning = true;
         Log.d(TAG, "Starting RFCOMM Server...");
 
-        if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
-            listener.onError("Bluetooth is not enabled");
+        try {
+            if (bluetoothAdapter == null || !bluetoothAdapter.isEnabled()) {
+                isRunning = false;
+                listener.onError("Bluetooth is not enabled");
+                return;
+            }
+        } catch (SecurityException e) {
+            isRunning = false;
+            listener.onError("Bluetooth permission denied");
             return;
         }
 
+        isRunning = true;
         acceptThread = new AcceptThread();
         acceptThread.start();
     }
@@ -77,8 +87,7 @@ public class RfcommServer implements GinTransport {
         if (!isRunning) {
             try {
                 socket.close();
-            } catch (IOException e) {
-                // Ignore
+            } catch (IOException ignored) {
             }
             return;
         }
@@ -96,16 +105,20 @@ public class RfcommServer implements GinTransport {
     }
 
     private synchronized void connectionLost() {
-        boolean wasRunning = isRunning;
+        if (!isRunning) return;
         isConnected = false;
         listener.onDisconnected();
-        if (wasRunning) {
-            Log.d(TAG, "Connection lost, restarting server...");
-            stop();
-            isRunning = true;
-            acceptThread = new AcceptThread();
-            acceptThread.start();
+
+        Log.d(TAG, "Connection lost, restarting accept thread...");
+        if (connectedThread != null) {
+            connectedThread.cancel();
+            connectedThread = null;
         }
+        if (acceptThread != null) {
+            acceptThread.cancel();
+        }
+        acceptThread = new AcceptThread();
+        acceptThread.start();
     }
 
     private class AcceptThread extends Thread {
@@ -115,24 +128,31 @@ public class RfcommServer implements GinTransport {
             BluetoothServerSocket tmp = null;
             try {
                 tmp = bluetoothAdapter.listenUsingRfcommWithServiceRecord("GinServer", GIN_UUID);
-            } catch (IOException e) {
+            } catch (IOException | SecurityException e) {
                 Log.e(TAG, "Server Socket listen() failed", e);
             }
             serverSocket = tmp;
         }
 
+        @Override
         public void run() {
             setName("AcceptThread");
-            BluetoothSocket socket = null;
+            if (serverSocket == null) {
+                synchronized (RfcommServer.this) {
+                    isRunning = false;
+                }
+                listener.onError("Failed to open RFCOMM server socket");
+                return;
+            }
 
             while (isRunning && !isConnected) {
+                BluetoothSocket socket;
                 try {
-                    if (serverSocket == null) {
-                        break;
-                    }
                     socket = serverSocket.accept();
                 } catch (IOException e) {
-                    Log.e(TAG, "Server Socket accept() failed", e);
+                    if (isRunning) {
+                        Log.e(TAG, "Server Socket accept() failed", e);
+                    }
                     break;
                 }
 
@@ -165,8 +185,8 @@ public class RfcommServer implements GinTransport {
             InputStream tmpIn = null;
             OutputStream tmpOut = null;
             try {
-                tmpIn = socket.getInputStream();
-                tmpOut = socket.getOutputStream();
+                tmpIn = new BufferedInputStream(socket.getInputStream(), STREAM_BUFFER_SIZE);
+                tmpOut = new BufferedOutputStream(socket.getOutputStream(), STREAM_BUFFER_SIZE);
             } catch (IOException e) {
                 Log.e(TAG, "temp sockets not created", e);
             }
@@ -174,12 +194,17 @@ public class RfcommServer implements GinTransport {
             outputStream = tmpOut;
         }
 
+        @Override
         public void run() {
             setName("ConnectedThread");
+            if (inputStream == null || outputStream == null) {
+                connectionLost();
+                return;
+            }
             byte[] lengthBuffer = new byte[4];
 
-            while (isRunning) {
-                try {
+            try {
+                while (isRunning) {
                     // 1. Read MAGIC_BYTE
                     int magic = inputStream.read();
                     if (magic == -1) {
@@ -187,7 +212,7 @@ public class RfcommServer implements GinTransport {
                         connectionLost();
                         break;
                     }
-                    if (magic != MAGIC_BYTE) {
+                    if ((byte) magic != MAGIC_BYTE) {
                         continue;
                     }
 
@@ -198,6 +223,9 @@ public class RfcommServer implements GinTransport {
                         break;
                     }
                     byte type = (byte) typeVal;
+                    if (type < TYPE_TEXT || type > TYPE_CONTROL) {
+                        continue;
+                    }
 
                     // 3. Read LENGTH
                     int readBytes = 0;
@@ -230,20 +258,22 @@ public class RfcommServer implements GinTransport {
                             return;
                         }
                         payloadBytesRead += r;
-                        listener.onProgress(payloadBytesRead, length);
                     }
 
                     listener.onDataReceived(payload, type);
-
-                } catch (IOException e) {
+                }
+            } catch (IOException e) {
+                if (isRunning) {
                     Log.e(TAG, "disconnected", e);
                     connectionLost();
-                    break;
                 }
+            } finally {
+                writeExecutor.shutdownNow();
             }
         }
 
         public void write(final byte[] data, final byte type) {
+            if (writeExecutor.isShutdown() || outputStream == null) return;
             writeExecutor.execute(new Runnable() {
                 @Override
                 public void run() {
@@ -258,13 +288,7 @@ public class RfcommServer implements GinTransport {
                         header[5] = (byte) (length & 0xFF);
 
                         outputStream.write(header);
-                        
-                        int chunkSize = 4096;
-                        for (int i = 0; i < length; i += chunkSize) {
-                            int size = Math.min(chunkSize, length - i);
-                            outputStream.write(data, i, size);
-                            listener.onProgress(i + size, length);
-                        }
+                        outputStream.write(data, 0, length);
                         outputStream.flush();
                     } catch (IOException e) {
                         Log.e(TAG, "Error writing data", e);

@@ -7,11 +7,12 @@ import android.widget.ArrayAdapter;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Spinner;
-import android.widget.Switch;
 import android.widget.Toast;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.widget.Toolbar;
+
+import com.google.android.material.materialswitch.MaterialSwitch;
 
 public class SettingsActivity extends AppCompatActivity {
     private EditText editApiKeyGemini;
@@ -25,21 +26,21 @@ public class SettingsActivity extends AppCompatActivity {
     private Spinner spinnerProvider1;
     private EditText editModelName1;
     private Spinner spinnerReasoning1;
-    private Switch switchAudio1;
+    private MaterialSwitch switchAudio1;
 
     // Preset 2
     private EditText editPresetName2;
     private Spinner spinnerProvider2;
     private EditText editModelName2;
     private Spinner spinnerReasoning2;
-    private Switch switchAudio2;
+    private MaterialSwitch switchAudio2;
 
     // Preset 3
     private EditText editPresetName3;
     private Spinner spinnerProvider3;
     private EditText editModelName3;
     private Spinner spinnerReasoning3;
-    private Switch switchAudio3;
+    private MaterialSwitch switchAudio3;
 
     private Button btnSave;
     private SharedPreferences prefs;
@@ -101,7 +102,6 @@ public class SettingsActivity extends AppCompatActivity {
     }
 
     private void setupSpinners() {
-
         String[] providers = {
                 GinConstants.PROVIDER_GEMINI,
                 GinConstants.PROVIDER_ANTHROPIC,
@@ -110,7 +110,7 @@ public class SettingsActivity extends AppCompatActivity {
         };
         ArrayAdapter<String> providerAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, providers);
         providerAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        
+
         spinnerProvider1.setAdapter(providerAdapter);
         spinnerProvider2.setAdapter(providerAdapter);
         spinnerProvider3.setAdapter(providerAdapter);
@@ -118,19 +118,18 @@ public class SettingsActivity extends AppCompatActivity {
         String[] reasonings = {"None", "High"};
         ArrayAdapter<String> reasoningAdapter = new ArrayAdapter<>(this, android.R.layout.simple_spinner_item, reasonings);
         reasoningAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
-        
+
         spinnerReasoning1.setAdapter(reasoningAdapter);
         spinnerReasoning2.setAdapter(reasoningAdapter);
         spinnerReasoning3.setAdapter(reasoningAdapter);
     }
 
     private void loadSettings() {
-
         editApiKeyGemini.setText(prefs.getString("api_key_gemini", ""));
         editApiKeyOpenai.setText(prefs.getString("api_key_openai", ""));
         editApiKeyAnthropic.setText(prefs.getString("api_key_anthropic", ""));
         editCustomUrl.setText(prefs.getString("custom_url", ""));
-        editSystemPrompt.setText(prefs.getString("system_prompt", 
+        editSystemPrompt.setText(prefs.getString("system_prompt",
                 "You are an AI assistant on Google Glass. Keep responses very short, concise, and direct (max 2 sentences). Don't fear going into details if the user has explicitly asked for it."));
 
         loadPreset(1, editPresetName1, spinnerProvider1, editModelName1, spinnerReasoning1, switchAudio1);
@@ -138,9 +137,9 @@ public class SettingsActivity extends AppCompatActivity {
         loadPreset(3, editPresetName3, spinnerProvider3, editModelName3, spinnerReasoning3, switchAudio3);
     }
 
-    private void loadPreset(int index, EditText name, Spinner provider, EditText model, Spinner reasoning, Switch audio) {
+    private void loadPreset(int index, EditText name, Spinner provider, EditText model, Spinner reasoning, MaterialSwitch audio) {
         name.setText(prefs.getString("preset_name_" + index, "Preset " + index));
-        
+
         String provStr = prefs.getString("preset_provider_" + index, GinConstants.PROVIDER_GEMINI);
         int providerIndex = 0;
         if (GinConstants.PROVIDER_ANTHROPIC.equals(provStr)) providerIndex = 1;
@@ -149,7 +148,7 @@ public class SettingsActivity extends AppCompatActivity {
         provider.setSelection(providerIndex);
 
         model.setText(prefs.getString("preset_model_" + index, "gemini-1.5-flash"));
-        
+
         String resStr = prefs.getString("preset_reasoning_" + index, "None");
         reasoning.setSelection("High".equals(resStr) ? 1 : 0);
 
@@ -171,12 +170,18 @@ public class SettingsActivity extends AppCompatActivity {
 
         editor.apply();
 
+        GinServerManager.getInstance(this).syncPresetsToGlass();
+
         Toast.makeText(this, "Configuration saved successfully", Toast.LENGTH_SHORT).show();
         finish();
     }
 
-    private void savePreset(SharedPreferences.Editor editor, int index, EditText name, Spinner provider, EditText model, Spinner reasoning, Switch audio) {
-        editor.putString("preset_name_" + index, name.getText().toString().trim());
+    private void savePreset(SharedPreferences.Editor editor, int index, EditText name, Spinner provider, EditText model, Spinner reasoning, MaterialSwitch audio) {
+        String cleanName = name.getText().toString().trim().replace('|', '-');
+        if (cleanName.isEmpty()) {
+            cleanName = "Preset " + index;
+        }
+        editor.putString("preset_name_" + index, cleanName);
         editor.putString("preset_provider_" + index, provider.getSelectedItem().toString());
         editor.putString("preset_model_" + index, model.getText().toString().trim());
         editor.putString("preset_reasoning_" + index, reasoning.getSelectedItem().toString());

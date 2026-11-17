@@ -1,5 +1,6 @@
 package com.custom.gin.phone.chat;
 
+import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.view.Gravity;
 import android.view.LayoutInflater;
@@ -10,6 +11,7 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.NonNull;
+import androidx.core.content.ContextCompat;
 import androidx.recyclerview.widget.RecyclerView;
 
 import com.custom.gin.phone.R;
@@ -19,17 +21,33 @@ import java.util.ArrayList;
 import java.util.List;
 
 public class ChatAdapter extends RecyclerView.Adapter<ChatAdapter.ChatViewHolder> {
+    private static final int MAX_DISPLAY_MESSAGES = 100;
 
     private final List<ChatMessage> messages = new ArrayList<>();
 
     public void setMessages(List<ChatMessage> newMessages) {
         messages.clear();
-        messages.addAll(newMessages);
+        if (newMessages != null) {
+            int start = Math.max(0, newMessages.size() - MAX_DISPLAY_MESSAGES);
+            messages.addAll(newMessages.subList(start, newMessages.size()));
+        }
         notifyDataSetChanged();
     }
 
-    /** Efficiently append a single message without full relayout. */
+    public void clearMessages() {
+        int size = messages.size();
+        if (size > 0) {
+            messages.clear();
+            notifyItemRangeRemoved(0, size);
+        }
+    }
+
+    /** Efficiently append a single message with bounded memory. */
     public void addMessage(ChatMessage message) {
+        if (messages.size() >= MAX_DISPLAY_MESSAGES) {
+            messages.remove(0);
+            notifyItemRemoved(0);
+        }
         messages.add(message);
         notifyItemInserted(messages.size() - 1);
     }
@@ -73,23 +91,33 @@ public class ChatAdapter extends RecyclerView.Adapter<ChatAdapter.ChatViewHolder
             textContent.setText(msg.getContent());
 
             if (msg.getMediaBytes() != null && msg.getMimeType() != null && msg.getMimeType().startsWith("image/")) {
-                imageMedia.setVisibility(View.VISIBLE);
                 try {
-                    android.graphics.Bitmap bitmap = BitmapFactory.decodeByteArray(msg.getMediaBytes(), 0, msg.getMediaBytes().length);
-                    imageMedia.setImageBitmap(bitmap);
+                    BitmapFactory.Options opts = new BitmapFactory.Options();
+                    opts.inPreferredConfig = Bitmap.Config.RGB_565;
+                    opts.inSampleSize = 2;
+                    Bitmap bitmap = BitmapFactory.decodeByteArray(msg.getMediaBytes(), 0, msg.getMediaBytes().length, opts);
+                    if (bitmap != null) {
+                        imageMedia.setImageBitmap(bitmap);
+                        imageMedia.setVisibility(View.VISIBLE);
+                    } else {
+                        imageMedia.setImageDrawable(null);
+                        imageMedia.setVisibility(View.GONE);
+                    }
                 } catch (Exception e) {
+                    imageMedia.setImageDrawable(null);
                     imageMedia.setVisibility(View.GONE);
                 }
             } else {
+                imageMedia.setImageDrawable(null);
                 imageMedia.setVisibility(View.GONE);
             }
 
             if (msg.getRole() == ChatMessage.Role.USER) {
                 container.setGravity(Gravity.END);
-                textRole.setTextColor(androidx.core.content.ContextCompat.getColor(itemView.getContext(), android.R.color.holo_blue_dark));
+                textRole.setTextColor(ContextCompat.getColor(itemView.getContext(), android.R.color.holo_blue_dark));
             } else {
                 container.setGravity(Gravity.START);
-                textRole.setTextColor(androidx.core.content.ContextCompat.getColor(itemView.getContext(), android.R.color.holo_green_dark));
+                textRole.setTextColor(ContextCompat.getColor(itemView.getContext(), android.R.color.holo_green_dark));
             }
         }
     }

@@ -12,26 +12,31 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.speech.tts.TextToSpeech;
+import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.WindowManager;
 import android.widget.ImageView;
 import android.widget.TextView;
-import com.google.android.glass.view.WindowUtils;
-import com.custom.gin.transport.GinTransport;
-import com.custom.gin.camera.ProgrammaticCamera;
-import org.json.JSONObject;
 
-import android.view.MotionEvent;
+import com.custom.gin.camera.ProgrammaticCamera;
+import com.custom.gin.transport.GinTransport;
+import com.google.android.glass.media.Sounds;
 import com.google.android.glass.touchpad.Gesture;
 import com.google.android.glass.touchpad.GestureDetector;
+import com.google.android.glass.view.WindowUtils;
 import com.google.android.glass.widget.Slider;
-import com.google.android.glass.media.Sounds;
+
+import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -43,10 +48,16 @@ public class MainActivity extends Activity
     // Duration tiers in seconds: 10 -> 15 -> 20 -> 30
     private static final int[] DURATION_TIERS = { 10, 15, 20, 30 };
 
-    // AudioRecord config
+    // AudioRecord config (8kHz 16-bit mono = 16,000 bytes/sec)
     private static final int SAMPLE_RATE = 8000;
     private static final int CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO;
     private static final int AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT;
+    private static final int WAV_HEADER_SIZE = 44;
+    private static final int INITIAL_PCM_CAPACITY = WAV_HEADER_SIZE + (SAMPLE_RATE * 2 * DURATION_TIERS[0]);
+
+    // Watchdog timeout so the Glass prism display & 60fps slider never stay on indefinitely
+    private static final long REQUEST_TIMEOUT_MS = 60000L;
+    private static final int MENU_ID_SETTINGS = 1001;
 
     private GinConnectionManager connectionManager;
     private AudioRecord audioRecord;
@@ -63,6 +74,7 @@ public class MainActivity extends Activity
     private ImageView statusIcon;
     private TextView statusText;
     private TextView timerText;
+    private TextView statusFootnote;
 
     private View responseLayout;
     private ImageView responseProviderIcon;
@@ -75,7 +87,8 @@ public class MainActivity extends Activity
     private Slider.Determinate mDeterminateSlider;
     private Slider.Indeterminate mIndeterminateSlider;
 
-    private boolean isRecording = false;
+    private volatile boolean isRecording = false;
+    private boolean isResumed = false;
     private int recordDurationSec = 0;
     private int currentDurationTier = 0; // index into DURATION_TIERS
     private String lastResponseText = "";
@@ -101,6 +114,26 @@ public class MainActivity extends Activity
         }
     };
 
+    private final Runnable requestTimeoutRunnable = new Runnable() {
+        @Override
+        public void run() {
+            hideSliders();
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            if (statusLayout.getVisibility() == View.VISIBLE) {
+                statusText.setText("Request timed out");
+                statusFootnote.setVisibility(View.GONE);
+                audioManager.playSoundEffect(Sounds.DISALLOWED);
+            }
+        }
+    };
+
+    private final Runnable updateScrollbarRunnable = new Runnable() {
+        @Override
+        public void run() {
+            updateScrollbar();
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -119,6 +152,7 @@ public class MainActivity extends Activity
         statusIcon = (ImageView) findViewById(R.id.status_icon);
         statusText = (TextView) findViewById(R.id.status_text);
         timerText = (TextView) findViewById(R.id.overlay_timer_text);
+        statusFootnote = (TextView) findViewById(R.id.status_footnote);
 
         responseLayout = findViewById(R.id.response_layout);
         responseProviderIcon = (ImageView) findViewById(R.id.response_provider_icon);
@@ -130,13 +164,6 @@ public class MainActivity extends Activity
         mSlider = Slider.from(findViewById(R.id.root_layout));
 
         tts = new TextToSpeech(this, this);
-
-        responseLayout.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                stopTtsIfSpeaking();
-            }
-        });
 
         responseScroll.setScrollListener(new ObservableScrollView.ScrollListener() {
             @Override
@@ -150,21 +177,22 @@ public class MainActivity extends Activity
             @Override
             public boolean onGesture(Gesture gesture) {
                 if (gesture == Gesture.SWIPE_RIGHT) {
-                    if (responseScroll != null) {
+                    if (responseLayout.getVisibility() == View.VISIBLE && responseScroll != null) {
                         responseScroll.smoothScrollBy(0, 150);
+                        return true;
                     }
-                    return true;
                 } else if (gesture == Gesture.SWIPE_LEFT) {
-                    if (responseScroll != null) {
+                    if (responseLayout.getVisibility() == View.VISIBLE && responseScroll != null) {
                         responseScroll.smoothScrollBy(0, -150);
+                        return true;
                     }
-                    return true;
                 } else if (gesture == Gesture.TAP) {
                     if (isRecording) {
                         extendRecordingDuration();
                         return true;
                     } else {
                         stopTtsIfSpeaking();
+                        audioManager.playSoundEffect(Sounds.TAP);
                         openOptionsMenu();
                         return true;
                     }
@@ -173,6 +201,10 @@ public class MainActivity extends Activity
                         stopRecordingAndSend();
                         return true;
                     }
+                } else if (gesture == Gesture.SWIPE_DOWN) {
+                    audioManager.playSoundEffect(Sounds.DISMISSED);
+                    finish();
+                    return true;
                 }
                 return false;
             }
@@ -193,16 +225,15 @@ public class MainActivity extends Activity
     }
 
     private void handleIntent(Intent intent) {
-        // Reset state if coming from a new trigger while something was open
-        if (tts != null && tts.isSpeaking()) {
-            tts.stop();
-        }
+        stopTtsIfSpeaking();
         if (isRecording) {
             stopRecording(); // discard current recording
         }
-        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        cancelRequestTimeout();
+        hideSliders();
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
-        String mode = intent.getStringExtra("start_mode");
+        String mode = intent != null ? intent.getStringExtra("start_mode") : null;
         if ("audio".equals(mode)) {
             startRecording();
         } else if ("camera".equals(mode)) {
@@ -210,15 +241,18 @@ public class MainActivity extends Activity
         } else {
             statusLayout.setVisibility(View.VISIBLE);
             responseLayout.setVisibility(View.GONE);
-            statusText.setText("Ready");
+            setProviderIcon(statusIcon, getActiveProviderName());
+            statusText.setText(connectionManager.isConnected() ? "Ready" : "Connecting...");
             timerText.setVisibility(View.GONE);
+            statusFootnote.setText("Tap for options");
+            statusFootnote.setVisibility(View.VISIBLE);
         }
     }
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
-        if (gestureDetector != null) {
-            return gestureDetector.onMotionEvent(event);
+        if (gestureDetector != null && gestureDetector.onMotionEvent(event)) {
+            return true;
         }
         return super.onGenericMotionEvent(event);
     }
@@ -226,14 +260,16 @@ public class MainActivity extends Activity
     @Override
     protected void onResume() {
         super.onResume();
+        isResumed = true;
         connectionManager.addListener(this);
-        if (!connectionManager.getTransport().isConnected()) {
+        if (!connectionManager.isConnected() && !isRecording) {
             statusText.setText("Connecting...");
         }
     }
 
     @Override
     protected void onPause() {
+        isResumed = false;
         super.onPause();
         connectionManager.removeListener(this);
         if (isRecording) {
@@ -245,12 +281,15 @@ public class MainActivity extends Activity
         if (tts != null) {
             tts.stop();
         }
-        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        cancelRequestTimeout();
+        hideSliders();
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
     @Override
     protected void onDestroy() {
         super.onDestroy();
+        mainHandler.removeCallbacksAndMessages(null);
         if (tts != null) {
             tts.shutdown();
         }
@@ -259,10 +298,38 @@ public class MainActivity extends Activity
         }
     }
 
+    private void startRequestTimeout() {
+        mainHandler.removeCallbacks(requestTimeoutRunnable);
+        mainHandler.postDelayed(requestTimeoutRunnable, REQUEST_TIMEOUT_MS);
+    }
+
+    private void cancelRequestTimeout() {
+        mainHandler.removeCallbacks(requestTimeoutRunnable);
+    }
+
+    private void hideSliders() {
+        if (mDeterminateSlider != null) {
+            mDeterminateSlider.hide();
+            mDeterminateSlider = null;
+        }
+        if (mIndeterminateSlider != null) {
+            mIndeterminateSlider.hide();
+            mIndeterminateSlider = null;
+        }
+    }
+
+    private String getActiveProviderName() {
+        SharedPreferences p = getSharedPreferences("gin_glass_prefs", Context.MODE_PRIVATE);
+        int activeIndex = p.getInt("active_preset_index", 1);
+        return p.getString("preset_provider_" + activeIndex, "custom");
+    }
+
     private void startRecording() {
         if (isRecording)
             return;
-        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        stopTtsIfSpeaking();
+        cancelRequestTimeout();
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         isRecording = true;
         recordDurationSec = 0;
         currentDurationTier = 0;
@@ -274,14 +341,10 @@ public class MainActivity extends Activity
         statusText.setText("Recording...");
         timerText.setVisibility(View.VISIBLE);
         timerText.setText("0/" + maxSec + "s");
+        statusFootnote.setText("Tap to extend  •  Two-tap to send");
+        statusFootnote.setVisibility(View.VISIBLE);
 
-        if (mIndeterminateSlider != null) {
-            mIndeterminateSlider.hide();
-            mIndeterminateSlider = null;
-        }
-        if (mDeterminateSlider != null) {
-            mDeterminateSlider.hide();
-        }
+        hideSliders();
         mDeterminateSlider = mSlider.startDeterminate(maxSec, 0);
 
         setProviderIcon(statusIcon, "voice");
@@ -290,15 +353,17 @@ public class MainActivity extends Activity
         if (minBufSize == AudioRecord.ERROR_BAD_VALUE || minBufSize == AudioRecord.ERROR) {
             Log.e(TAG, "Invalid AudioRecord buffer size: " + minBufSize);
             statusText.setText("Mic init failed");
+            statusFootnote.setVisibility(View.GONE);
+            hideSliders();
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             isRecording = false;
             return;
         }
 
         final int bufferSize = Math.max(minBufSize, 4096);
-        pcmBuffer = new ByteArrayOutputStream();
-
-        // Zero-copy optimization: reserve 44 bytes for the WAV header upfront
-        pcmBuffer.write(new byte[44], 0, 44);
+        // Pre-allocate for initial 10s tier + 44-byte WAV header to prevent Dalvik heap reallocations
+        pcmBuffer = new ByteArrayOutputStream(INITIAL_PCM_CAPACITY);
+        pcmBuffer.write(new byte[WAV_HEADER_SIZE], 0, WAV_HEADER_SIZE);
 
         try {
             audioRecord = new AudioRecord(
@@ -311,22 +376,27 @@ public class MainActivity extends Activity
             if (audioRecord.getState() != AudioRecord.STATE_INITIALIZED) {
                 Log.e(TAG, "AudioRecord failed to initialize");
                 statusText.setText("Mic init failed");
+                statusFootnote.setVisibility(View.GONE);
                 audioRecord.release();
                 audioRecord = null;
+                hideSliders();
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                 isRecording = false;
                 return;
             }
 
             audioRecord.startRecording();
 
+            final AudioRecord activeRecord = audioRecord;
+            final ByteArrayOutputStream activeBuffer = pcmBuffer;
             recordingThread = new Thread(new Runnable() {
                 @Override
                 public void run() {
                     byte[] readBuf = new byte[bufferSize];
                     while (isRecording) {
-                        int bytesRead = audioRecord.read(readBuf, 0, readBuf.length);
+                        int bytesRead = activeRecord.read(readBuf, 0, readBuf.length);
                         if (bytesRead > 0) {
-                            pcmBuffer.write(readBuf, 0, bytesRead);
+                            activeBuffer.write(readBuf, 0, bytesRead);
                         }
                     }
                 }
@@ -338,6 +408,9 @@ public class MainActivity extends Activity
         } catch (Exception e) {
             Log.e(TAG, "AudioRecord setup failed", e);
             statusText.setText("Record failed");
+            statusFootnote.setVisibility(View.GONE);
+            hideSliders();
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             isRecording = false;
         }
     }
@@ -375,8 +448,6 @@ public class MainActivity extends Activity
             } catch (Exception e) {
                 Log.w(TAG, "audioRecord.stop() failed", e);
             }
-            audioRecord.release();
-            audioRecord = null;
         }
 
         if (recordingThread != null) {
@@ -384,18 +455,36 @@ public class MainActivity extends Activity
                 recordingThread.join(500);
             } catch (InterruptedException e) {
                 Log.w(TAG, "recordingThread.join() interrupted", e);
+                Thread.currentThread().interrupt();
             }
             recordingThread = null;
         }
+
+        if (audioRecord != null) {
+            try {
+                audioRecord.release();
+            } catch (Exception e) {
+                Log.w(TAG, "audioRecord.release() failed", e);
+            }
+            audioRecord = null;
+        }
+
+        if (mDeterminateSlider != null) {
+            mDeterminateSlider.hide();
+            mDeterminateSlider = null;
+        }
+        timerText.setVisibility(View.GONE);
+        statusFootnote.setVisibility(View.GONE);
     }
 
     private void stopRecordingAndSend() {
         stopRecording();
 
-        if (pcmBuffer == null || pcmBuffer.size() == 0) {
+        if (pcmBuffer == null || pcmBuffer.size() <= WAV_HEADER_SIZE) {
+            pcmBuffer = null;
             statusText.setText("No audio captured");
             audioManager.playSoundEffect(Sounds.DISALLOWED);
-            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             return;
         }
         audioManager.playSoundEffect(Sounds.SUCCESS);
@@ -404,23 +493,17 @@ public class MainActivity extends Activity
         pcmBuffer = null;
 
         statusText.setText("Sending...");
-        timerText.setVisibility(View.GONE);
+        setProviderIcon(statusIcon, getActiveProviderName());
 
-        if (mDeterminateSlider != null) {
-            mDeterminateSlider.hide();
-            mDeterminateSlider = null;
-        }
-        if (mIndeterminateSlider != null) {
-            mIndeterminateSlider.hide();
-            mIndeterminateSlider = null;
-        }
+        hideSliders();
         mIndeterminateSlider = mSlider.startIndeterminate();
         mIndeterminateSlider.show();
+        startRequestTimeout();
 
         backgroundExecutor.execute(new Runnable() {
             @Override
             public void run() {
-                buildWavHeaderInPlace(finalAudio, finalAudio.length - 44, SAMPLE_RATE, 1, 16);
+                buildWavHeaderInPlace(finalAudio, finalAudio.length - WAV_HEADER_SIZE, SAMPLE_RATE, 1, 16);
                 connectionManager.sendData(finalAudio, GinTransport.TYPE_AUDIO);
             }
         });
@@ -428,7 +511,7 @@ public class MainActivity extends Activity
 
     private static void buildWavHeaderInPlace(byte[] wav, int dataLen, int sampleRate, int channels,
             int bitsPerSample) {
-        int totalLen = 44 + dataLen;
+        int totalLen = WAV_HEADER_SIZE + dataLen;
         int byteRate = sampleRate * channels * bitsPerSample / 8;
         int blockAlign = channels * bitsPerSample / 8;
 
@@ -475,14 +558,18 @@ public class MainActivity extends Activity
 
     // Camera features
     private void capturePhoto() {
+        stopTtsIfSpeaking();
         if (isRecording) {
             stopRecording();
         }
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         statusLayout.setVisibility(View.VISIBLE);
         responseLayout.setVisibility(View.GONE);
         statusText.setText("Capturing...");
         timerText.setVisibility(View.GONE);
+        statusFootnote.setVisibility(View.GONE);
         setProviderIcon(statusIcon, "camera");
+        startRequestTimeout();
         programmaticCamera.capturePhoto();
     }
 
@@ -491,17 +578,16 @@ public class MainActivity extends Activity
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (!isResumed || isFinishing() || isDestroyed())
+                    return;
+                audioManager.playSoundEffect(Sounds.SUCCESS);
                 statusText.setText("Sending...");
-                SharedPreferences p = getSharedPreferences("gin_glass_prefs", Context.MODE_PRIVATE);
-                int activeIndex = p.getInt("active_preset_index", 1);
-                String activeProvider = p.getString("preset_provider_" + activeIndex, "custom");
-                setProviderIcon(statusIcon, activeProvider);
+                setProviderIcon(statusIcon, getActiveProviderName());
 
-                if (mIndeterminateSlider != null) {
-                    mIndeterminateSlider.hide();
-                }
+                hideSliders();
                 mIndeterminateSlider = mSlider.startIndeterminate();
                 mIndeterminateSlider.show();
+                startRequestTimeout();
                 sendImageBytes(jpegData);
             }
         });
@@ -534,7 +620,12 @@ public class MainActivity extends Activity
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                statusText.setText("Connecting...");
+                cancelRequestTimeout();
+                hideSliders();
+                if (!isRecording) {
+                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                    statusText.setText("Connecting...");
+                }
             }
         });
     }
@@ -544,38 +635,35 @@ public class MainActivity extends Activity
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (!isResumed || isFinishing() || isDestroyed())
+                    return;
                 if (type == GinTransport.TYPE_CONTROL) {
-                    String cmd = new String(data, java.nio.charset.StandardCharsets.UTF_8);
+                    String cmd = new String(data, StandardCharsets.UTF_8);
                     if ("THINKING".equals(cmd)) {
                         statusText.setText("Thinking...");
-                        
-                        SharedPreferences p = getSharedPreferences("gin_glass_prefs", Context.MODE_PRIVATE);
-                        int activeIndex = p.getInt("active_preset_index", 1);
-                        String activeProvider = p.getString("preset_provider_" + activeIndex, "custom");
-                        setProviderIcon(statusIcon, activeProvider);
+                        setProviderIcon(statusIcon, getActiveProviderName());
 
                         if (mIndeterminateSlider == null) {
                             mIndeterminateSlider = mSlider.startIndeterminate();
                             mIndeterminateSlider.show();
                         }
+                        startRequestTimeout();
                     }
                 } else if (type == GinTransport.TYPE_TEXT) {
-                    handleTextResponse(new String(data, java.nio.charset.StandardCharsets.UTF_8));
+                    handleTextResponse(new String(data, StandardCharsets.UTF_8));
                 }
             }
         });
     }
 
     private void handleTextResponse(String jsonString) {
+        cancelRequestTimeout();
+        hideSliders();
+
         try {
             JSONObject obj = new JSONObject(jsonString);
             String provider = obj.optString("provider", "custom");
             lastResponseText = obj.optString("text", "");
-
-            if (mIndeterminateSlider != null) {
-                mIndeterminateSlider.hide();
-                mIndeterminateSlider = null;
-            }
 
             statusLayout.setVisibility(View.GONE);
             responseLayout.setVisibility(View.VISIBLE);
@@ -585,15 +673,13 @@ public class MainActivity extends Activity
             audioManager.playSoundEffect(Sounds.SUCCESS);
 
             responseScroll.scrollTo(0, 0);
-            mainHandler.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    updateScrollbar();
-                }
-            }, 100);
+            mainHandler.removeCallbacks(updateScrollbarRunnable);
+            mainHandler.postDelayed(updateScrollbarRunnable, 100);
 
-            if (isTtsReady) {
+            if (isTtsReady && !lastResponseText.isEmpty()) {
                 speakResponse(lastResponseText);
+            } else {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             }
 
         } catch (Exception e) {
@@ -602,34 +688,23 @@ public class MainActivity extends Activity
             responseLayout.setVisibility(View.VISIBLE);
             responseText.setText(jsonString);
             setProviderIcon(responseProviderIcon, "custom");
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
     }
 
     private void setProviderIcon(ImageView imageView, String provider) {
         if ("camera".equals(provider)) {
             imageView.setImageResource(R.drawable.ic_camera_50);
-            return;
         } else if ("voice".equals(provider)) {
             imageView.setImageResource(R.drawable.ic_microphone_on_50);
-            return;
-        }
-
-        String resName;
-        if ("Gemini".equalsIgnoreCase(provider)) {
-            resName = "ic_aimodel_gemini_64x64";
+        } else if ("Gemini".equalsIgnoreCase(provider)) {
+            imageView.setImageResource(R.drawable.ic_aimodel_gemini_64x64);
         } else if ("OpenAI GPT".equalsIgnoreCase(provider)) {
-            resName = "ic_aimodel_openai_64x64";
+            imageView.setImageResource(R.drawable.ic_aimodel_openai_64x64);
         } else if ("Anthropic Claude".equalsIgnoreCase(provider)) {
-            resName = "ic_aimodel_claude_64x64";
+            imageView.setImageResource(R.drawable.ic_aimodel_claude_64x64);
         } else {
-            resName = "ic_aimodel_generic_64x64";
-        }
-
-        int resId = getResources().getIdentifier(resName, "drawable", getPackageName());
-        if (resId != 0) {
-            imageView.setImageResource(resId);
-        } else {
-            imageView.setImageDrawable(null);
+            imageView.setImageResource(R.drawable.ic_aimodel_generic_64x64);
         }
     }
 
@@ -640,18 +715,25 @@ public class MainActivity extends Activity
 
         int maxScroll = contentHeight - scrollHeight;
         if (maxScroll <= 0) {
-            scrollbarTrack.setVisibility(View.GONE);
+            if (scrollbarTrack.getVisibility() != View.GONE) {
+                scrollbarTrack.setVisibility(View.GONE);
+            }
             return;
         }
 
-        scrollbarTrack.setVisibility(View.VISIBLE);
+        if (scrollbarTrack.getVisibility() != View.VISIBLE) {
+            scrollbarTrack.setVisibility(View.VISIBLE);
+        }
         int trackHeight = scrollbarTrack.getHeight();
+        if (trackHeight <= 0) return;
 
         int thumbHeight = Math.max(30, (scrollHeight * trackHeight) / contentHeight);
 
         ViewGroup.LayoutParams params = scrollbarThumb.getLayoutParams();
-        params.height = thumbHeight;
-        scrollbarThumb.setLayoutParams(params);
+        if (params.height != thumbHeight) {
+            params.height = thumbHeight;
+            scrollbarThumb.setLayoutParams(params);
+        }
 
         float progress = (float) scrollY / maxScroll;
         int maxThumbTranslate = trackHeight - thumbHeight;
@@ -659,19 +741,22 @@ public class MainActivity extends Activity
     }
 
     private void speakResponse(String text) {
-        if (!isTtsReady || text.isEmpty())
+        if (!isTtsReady || text.isEmpty()) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             return;
-        java.util.HashMap<String, String> params = new java.util.HashMap<>();
+        }
+        HashMap<String, String> params = new HashMap<>();
         params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "gin_tts_utterance");
-        tts.speak(text, TextToSpeech.QUEUE_FLUSH, params);
+        int res = tts.speak(text, TextToSpeech.QUEUE_FLUSH, params);
+        if (res == TextToSpeech.ERROR) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
     }
 
     private void stopTtsIfSpeaking() {
-        if (!isTtsReady || lastResponseText.isEmpty())
-            return;
-        if (tts.isSpeaking()) {
+        if (tts != null && isTtsReady && tts.isSpeaking()) {
             tts.stop();
-            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
     }
 
@@ -691,15 +776,15 @@ public class MainActivity extends Activity
     }
 
     private void setupTtsListener() {
-        tts.setOnUtteranceProgressListener(new android.speech.tts.UtteranceProgressListener() {
+        tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
             public void onStart(String utteranceId) {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
-                        if (isFinishing() || isDestroyed())
+                        if (!isResumed || isFinishing() || isDestroyed())
                             return;
-                        getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     }
                 });
             }
@@ -711,7 +796,7 @@ public class MainActivity extends Activity
                     public void run() {
                         if (isFinishing() || isDestroyed())
                             return;
-                        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     }
                 });
             }
@@ -723,7 +808,7 @@ public class MainActivity extends Activity
                     public void run() {
                         if (isFinishing() || isDestroyed())
                             return;
-                        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
                     }
                 });
             }
@@ -735,13 +820,17 @@ public class MainActivity extends Activity
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (mIndeterminateSlider != null) {
-                    mIndeterminateSlider.hide();
-                    mIndeterminateSlider = null;
-                }
+                if (isFinishing() || isDestroyed())
+                    return;
+                cancelRequestTimeout();
+                hideSliders();
+                statusLayout.setVisibility(View.VISIBLE);
+                responseLayout.setVisibility(View.GONE);
+                timerText.setVisibility(View.GONE);
+                statusFootnote.setVisibility(View.GONE);
                 statusText.setText("Error: " + message);
                 audioManager.playSoundEffect(Sounds.DISALLOWED);
-                getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             }
         });
     }
@@ -762,6 +851,21 @@ public class MainActivity extends Activity
     @Override
     public boolean onCreateOptionsMenu(Menu menu) {
         getMenuInflater().inflate(R.menu.voice_menu, menu);
+        // Humanize titles for touchpad menu while keeping ContextualMenus.Command enums in voice_menu.xml
+        MenuItem recordItem = menu.findItem(R.id.menu_record);
+        if (recordItem != null) {
+            recordItem.setTitle("Make a request");
+        }
+        MenuItem cameraItem = menu.findItem(R.id.menu_camera);
+        if (cameraItem != null) {
+            cameraItem.setTitle("Check this out");
+        }
+        menu.add(Menu.NONE, MENU_ID_SETTINGS, Menu.NONE, "Settings")
+                .setIcon(R.drawable.ic_gear_50);
+        MenuItem stopItem = menu.findItem(R.id.menu_stop);
+        if (stopItem != null) {
+            stopItem.setTitle("Dismiss");
+        }
         return true;
     }
 
@@ -776,7 +880,11 @@ public class MainActivity extends Activity
             } else if (itemId == R.id.menu_camera) {
                 capturePhoto();
                 return true;
+            } else if (itemId == MENU_ID_SETTINGS) {
+                startActivity(new Intent(this, SettingsActivity.class));
+                return true;
             } else if (itemId == R.id.menu_stop) {
+                audioManager.playSoundEffect(Sounds.DISMISSED);
                 finish();
                 return true;
             }

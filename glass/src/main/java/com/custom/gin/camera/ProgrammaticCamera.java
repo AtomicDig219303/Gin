@@ -3,7 +3,6 @@ package com.custom.gin.camera;
 import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
-import android.graphics.Matrix;
 import android.hardware.Camera;
 import android.util.Log;
 import android.view.SurfaceHolder;
@@ -11,10 +10,13 @@ import android.view.SurfaceView;
 import android.view.ViewGroup;
 
 import java.io.ByteArrayOutputStream;
-import java.io.IOException;
+import java.util.List;
 
 public class ProgrammaticCamera implements SurfaceHolder.Callback {
     private static final String TAG = "ProgrammaticCamera";
+    private static final int TARGET_WIDTH = 640;
+    private static final int TARGET_HEIGHT = 360;
+    private static final int JPEG_QUALITY = 80;
 
     public interface Callback {
         void onPictureTaken(byte[] jpegData);
@@ -28,6 +30,22 @@ public class ProgrammaticCamera implements SurfaceHolder.Callback {
     private Camera camera;
     private SurfaceView dummySurfaceView;
     private boolean isCapturing = false;
+    private int configuredPictureWidth = 1280;
+
+    private final Runnable takePictureRunnable = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                if (camera != null && isCapturing) {
+                    camera.takePicture(null, null, jpegCallback);
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "takePicture() failed", e);
+                cleanup(null);
+                callback.onError("takePicture failed: " + e.getMessage());
+            }
+        }
+    };
 
     public ProgrammaticCamera(Context context, ViewGroup parentLayout, Callback callback) {
         this.context = context;
@@ -61,71 +79,105 @@ public class ProgrammaticCamera implements SurfaceHolder.Callback {
             return;
         }
 
+        if (camera == null) {
+            cleanup(null);
+            callback.onError("Camera unavailable");
+            return;
+        }
+
         try {
             camera.setPreviewDisplay(holder);
-            
-            // Set 640x360 or 1280x720 preview size for Glass 16:9 ratio
+
             Camera.Parameters params = camera.getParameters();
-            params.setPreviewSize(640, 360);
-            params.setPictureSize(1280, 720); // 720p photo
+            Camera.Size previewSize = chooseOptimalSize(params.getSupportedPreviewSizes(), TARGET_WIDTH, TARGET_HEIGHT);
+            if (previewSize != null) {
+                params.setPreviewSize(previewSize.width, previewSize.height);
+            }
+
+            // Prefer hardware ISP capture directly at ~640x360 to avoid CPU decode + re-encode on OMAP4430
+            Camera.Size pictureSize = chooseOptimalSize(params.getSupportedPictureSizes(), TARGET_WIDTH, TARGET_HEIGHT);
+            if (pictureSize != null) {
+                params.setPictureSize(pictureSize.width, pictureSize.height);
+                configuredPictureWidth = pictureSize.width;
+            } else {
+                params.setPictureSize(1280, 720);
+                configuredPictureWidth = 1280;
+            }
+            params.setJpegQuality(JPEG_QUALITY);
             camera.setParameters(params);
 
             camera.startPreview();
-            Log.d(TAG, "Preview started. Taking picture...");
-            
-            // Wait a small delay to let exposure adjust, then take picture
-            dummySurfaceView.postDelayed(new Runnable() {
-                @Override
-                public void run() {
-                    try {
-                        if (camera != null) {
-                            camera.takePicture(null, null, jpegCallback);
-                        }
-                    } catch (Exception e) {
-                        Log.e(TAG, "takePicture() failed", e);
-                        cleanup(null);
-                        callback.onError("takePicture failed: " + e.getMessage());
-                    }
-                }
-            }, 300);
+            Log.d(TAG, "Preview started (" + configuredPictureWidth + "w). Taking picture...");
 
-        } catch (IOException e) {
-            Log.e(TAG, "Failed to set preview display", e);
+            // Wait a brief delay to let exposure settle, then take picture
+            if (dummySurfaceView != null) {
+                dummySurfaceView.postDelayed(takePictureRunnable, 250);
+            }
+
+        } catch (Exception e) {
+            Log.e(TAG, "Failed to start camera preview", e);
             cleanup(null);
             callback.onError("Camera preview failed: " + e.getMessage());
         }
     }
 
+    private static Camera.Size chooseOptimalSize(List<Camera.Size> sizes, int targetW, int targetH) {
+        if (sizes == null || sizes.isEmpty()) return null;
+        Camera.Size best = null;
+        int bestDiff = Integer.MAX_VALUE;
+        for (Camera.Size size : sizes) {
+            if (size.width == targetW && size.height == targetH) {
+                return size;
+            }
+            int diff = Math.abs(size.width - targetW) + Math.abs(size.height - targetH);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                best = size;
+            }
+        }
+        return best;
+    }
+
     private final Camera.PictureCallback jpegCallback = new Camera.PictureCallback() {
         @Override
         public void onPictureTaken(final byte[] data, Camera cam) {
-            Log.d(TAG, "Picture taken. Processing...");
-            
-            // Immediately release camera to prevent overheating
+            final int capturedWidth = configuredPictureWidth;
+            // Immediately release camera to prevent OMAP4430 overheating
             cleanup(cam);
+
+            if (data == null || data.length == 0) {
+                callback.onError("Empty camera data");
+                return;
+            }
+
+            // Fast path: if hardware ISP already produced <= 640px width, skip Dalvik decode & re-encode
+            if (capturedWidth <= TARGET_WIDTH) {
+                Log.d(TAG, "Hardware JPEG ready directly: " + data.length + " bytes");
+                callback.onPictureTaken(data);
+                return;
+            }
 
             new Thread(new Runnable() {
                 @Override
                 public void run() {
                     try {
-                        // Downscale JPEG to save Bluetooth transmission time and RAM
                         BitmapFactory.Options options = new BitmapFactory.Options();
-                        options.inSampleSize = 2; // Decodes 1280x720 directly to 640x360
-                        
+                        options.inSampleSize = Math.max(2, capturedWidth / TARGET_WIDTH);
+                        // RGB_565 uses 2 bytes/pixel instead of 4 (JPEG has no alpha channel)
+                        options.inPreferredConfig = Bitmap.Config.RGB_565;
+
                         Bitmap original = BitmapFactory.decodeByteArray(data, 0, data.length, options);
                         if (original == null) {
                             callback.onError("Failed to decode picture bytes");
                             return;
                         }
 
-                        ByteArrayOutputStream out = new ByteArrayOutputStream();
-                        original.compress(Bitmap.CompressFormat.JPEG, 80, out);
+                        ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(data.length, 65536));
+                        original.compress(Bitmap.CompressFormat.JPEG, JPEG_QUALITY, out);
                         original.recycle();
 
                         final byte[] processedData = out.toByteArray();
                         Log.d(TAG, "Downscaled JPEG size: " + processedData.length + " bytes");
-
-                        // Return result
                         callback.onPictureTaken(processedData);
 
                     } catch (Exception e) {
@@ -133,31 +185,34 @@ public class ProgrammaticCamera implements SurfaceHolder.Callback {
                         callback.onError("Image process error: " + e.getMessage());
                     }
                 }
-            }).start();
+            }, "CameraDownscaleThread").start();
         }
     };
 
     private void cleanup(Camera activeCamera) {
-        if (activeCamera != null) {
-            try {
-                activeCamera.stopPreview();
-                activeCamera.release();
-            } catch (Exception e) {
-                Log.w(TAG, "Error stopping/releasing activeCamera", e);
-            }
-        } else if (camera != null) {
-            try {
-                camera.stopPreview();
-                camera.release();
-            } catch (Exception e) {
-                Log.w(TAG, "Error stopping/releasing camera", e);
-            }
-        }
-        camera = null;
-
         if (dummySurfaceView != null) {
-            parentLayout.removeView(dummySurfaceView);
+            dummySurfaceView.removeCallbacks(takePictureRunnable);
+            try {
+                dummySurfaceView.getHolder().removeCallback(this);
+                parentLayout.removeView(dummySurfaceView);
+            } catch (Exception e) {
+                Log.w(TAG, "Error removing dummySurfaceView", e);
+            }
             dummySurfaceView = null;
+        }
+
+        Camera camToRelease = (activeCamera != null) ? activeCamera : camera;
+        camera = null;
+        if (camToRelease != null) {
+            try {
+                camToRelease.stopPreview();
+            } catch (Exception ignored) {
+            }
+            try {
+                camToRelease.release();
+            } catch (Exception e) {
+                Log.w(TAG, "Error releasing camera", e);
+            }
         }
         isCapturing = false;
     }

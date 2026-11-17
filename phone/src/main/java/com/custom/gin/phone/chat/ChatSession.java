@@ -9,28 +9,32 @@ public class ChatSession {
 
     private final List<ChatMessage> messages = new ArrayList<>();
 
-    public void addMessage(ChatMessage message) {
+    public synchronized void addMessage(ChatMessage message) {
         messages.add(message);
         while (messages.size() > MAX_MESSAGES) {
             messages.remove(0);
         }
     }
 
-    public List<ChatMessage> getMessages() {
+    public synchronized void removeMessage(ChatMessage message) {
+        messages.remove(message);
+    }
+
+    public synchronized List<ChatMessage> getMessages() {
         return new ArrayList<>(messages);
     }
 
-    public void clear() {
+    public synchronized void clear() {
         messages.clear();
     }
 
     /**
-     * Releases media byte arrays from all messages except the most recent one.
-     * Call after sending messages to the LLM API to prevent OOM from accumulated
-     * audio/image data across many conversation turns.
+     * Releases media byte arrays from all messages in history.
+     * Call after building/sending the LLM API request to prevent OOM and avoid
+     * re-encoding/re-uploading historical audio/image payloads on future turns.
      */
-    public void clearMediaFromHistory() {
-        for (int i = 0; i < messages.size() - 1; i++) {
+    public synchronized void clearMediaFromHistory() {
+        for (int i = 0; i < messages.size(); i++) {
             messages.get(i).clearMedia();
         }
     }

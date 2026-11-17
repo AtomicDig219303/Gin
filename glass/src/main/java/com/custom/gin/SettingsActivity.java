@@ -10,13 +10,12 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
 
+import com.google.android.glass.media.Sounds;
 import com.google.android.glass.widget.CardBuilder;
 import com.google.android.glass.widget.CardScrollAdapter;
 import com.google.android.glass.widget.CardScrollView;
-import com.google.android.glass.media.Sounds;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.nio.charset.StandardCharsets;
 
 public class SettingsActivity extends Activity {
     private static final String TAG = "SettingsActivity";
@@ -36,7 +35,6 @@ public class SettingsActivity extends Activity {
         adapter = new SettingsCardAdapter();
         cardScrollView = new CardScrollView(this);
         cardScrollView.setAdapter(adapter);
-        cardScrollView.activate();
         setContentView(cardScrollView);
 
         cardScrollView.setOnItemClickListener(new AdapterView.OnItemClickListener() {
@@ -51,7 +49,22 @@ public class SettingsActivity extends Activity {
         });
     }
 
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (cardScrollView != null) {
+            cardScrollView.activate();
+        }
+        GinConnectionManager.getInstance(this).ensureConnected();
+    }
 
+    @Override
+    protected void onPause() {
+        if (cardScrollView != null) {
+            cardScrollView.deactivate();
+        }
+        super.onPause();
+    }
 
     private void cycleModelPreset() {
         int currentIdx = prefs.getInt("active_preset_index", 1);
@@ -65,7 +78,7 @@ public class SettingsActivity extends Activity {
         // Send control message to phone
         GinConnectionManager mgr = GinConnectionManager.getInstance(this);
         String payload = "SET_PRESET:" + nextIdx;
-        mgr.sendData(payload.getBytes(), com.custom.gin.transport.GinTransport.TYPE_CONTROL);
+        mgr.sendData(payload.getBytes(StandardCharsets.UTF_8), com.custom.gin.transport.GinTransport.TYPE_CONTROL);
 
         Log.d(TAG, "Cycled preset to " + nextIdx);
         adapter.notifyDataSetChanged();
@@ -83,7 +96,7 @@ public class SettingsActivity extends Activity {
         // Send control message to phone
         GinConnectionManager mgr = GinConnectionManager.getInstance(this);
         String payload = "SET_CHAT_MODE:" + newMode;
-        mgr.sendData(payload.getBytes(), com.custom.gin.transport.GinTransport.TYPE_CONTROL);
+        mgr.sendData(payload.getBytes(StandardCharsets.UTF_8), com.custom.gin.transport.GinTransport.TYPE_CONTROL);
 
         Log.d(TAG, "Chat mode toggled to " + newMode);
         adapter.notifyDataSetChanged();
@@ -101,27 +114,33 @@ public class SettingsActivity extends Activity {
 
         @Override
         public int getPosition(Object item) {
+            if (item instanceof Integer) {
+                int pos = (Integer) item;
+                if (pos >= 0 && pos < mCards.length) {
+                    return pos;
+                }
+            }
             return AdapterView.INVALID_POSITION;
         }
 
         @Override
         public int getCount() {
-            return 2;
+            return mCards.length;
         }
 
         @Override
         public Object getItem(int position) {
-            return position;
+            return Integer.valueOf(position);
         }
 
         @Override
         public int getViewTypeCount() {
-            return 1;
+            return CardBuilder.getViewTypeCount();
         }
 
         @Override
         public int getItemViewType(int position) {
-            return 0;
+            return mCards[position].getItemViewType();
         }
 
         @Override
@@ -134,7 +153,7 @@ public class SettingsActivity extends Activity {
                 String name = prefs.getString("preset_name_" + activeIndex, "Preset " + activeIndex);
 
                 card.setText("Model: " + name);
-                card.setFootnote("Tap to cycle to next preset");
+                card.setFootnote("Tap to cycle preset (" + activeIndex + "/3)");
             } else if (position == 1) {
                 // Chat Mode Card
                 boolean isChatMode = prefs.getBoolean("is_chat_mode", true);

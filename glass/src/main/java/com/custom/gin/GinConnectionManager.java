@@ -2,23 +2,41 @@ package com.custom.gin;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import com.custom.gin.transport.GinTransport;
 import com.custom.gin.transport.RfcommTransport;
 
+import java.nio.charset.StandardCharsets;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
 
 public class GinConnectionManager implements GinTransport.Listener {
     private static final String TAG = "GinConnectionManager";
     private static final String PREFS_NAME = "gin_glass_prefs";
+    private static final String KEY_LAST_BT_ADDRESS = "last_connected_bt_address";
+    private static final long IDLE_STOP_DELAY_MS = 15000L;
 
     private static GinConnectionManager instance;
 
     private final Context context;
     private final SharedPreferences prefs;
-    private GinTransport activeTransport;
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private RfcommTransport activeTransport;
     private final List<GinTransport.Listener> listeners = new CopyOnWriteArrayList<>();
+
+    private final Runnable idleCheckRunnable = new Runnable() {
+        @Override
+        public void run() {
+            synchronized (GinConnectionManager.this) {
+                if (listeners.isEmpty() && activeTransport != null && !activeTransport.isConnected()) {
+                    Log.d(TAG, "No active UI listeners and not connected; stopping background RFCOMM retries to save battery");
+                    activeTransport.stop();
+                }
+            }
+        }
+    };
 
     private GinConnectionManager(Context context) {
         this.context = context.getApplicationContext();
@@ -39,11 +57,19 @@ public class GinConnectionManager implements GinTransport.Listener {
         }
 
         activeTransport = new RfcommTransport(this);
+        activeTransport.setPreferredDeviceAddress(prefs.getString(KEY_LAST_BT_ADDRESS, null));
         Log.d(TAG, "Initialized RFCOMM transport");
         activeTransport.start();
     }
 
-
+    public synchronized void ensureConnected() {
+        mainHandler.removeCallbacks(idleCheckRunnable);
+        if (activeTransport == null) {
+            initializeTransport();
+        } else if (!activeTransport.isConnected()) {
+            activeTransport.start();
+        }
+    }
 
     public GinTransport getTransport() {
         return activeTransport;
@@ -51,6 +77,9 @@ public class GinConnectionManager implements GinTransport.Listener {
 
     public synchronized void sendData(byte[] data, byte type) {
         if (activeTransport != null) {
+            if (!activeTransport.isConnected()) {
+                activeTransport.start();
+            }
             activeTransport.sendData(data, type);
         }
     }
@@ -60,18 +89,29 @@ public class GinConnectionManager implements GinTransport.Listener {
     }
 
     public void addListener(GinTransport.Listener listener) {
+        mainHandler.removeCallbacks(idleCheckRunnable);
         if (!listeners.contains(listener)) {
             listeners.add(listener);
         }
+        ensureConnected();
     }
 
     public void removeListener(GinTransport.Listener listener) {
         listeners.remove(listener);
+        if (listeners.isEmpty()) {
+            mainHandler.postDelayed(idleCheckRunnable, IDLE_STOP_DELAY_MS);
+        }
     }
 
     @Override
     public void onConnected() {
         Log.d(TAG, "Transport connected");
+        if (activeTransport != null) {
+            String connectedAddr = activeTransport.getPreferredDeviceAddress();
+            if (connectedAddr != null) {
+                prefs.edit().putString(KEY_LAST_BT_ADDRESS, connectedAddr).apply();
+            }
+        }
         for (GinTransport.Listener l : listeners) {
             l.onConnected();
         }
@@ -80,6 +120,9 @@ public class GinConnectionManager implements GinTransport.Listener {
     @Override
     public void onDisconnected() {
         Log.d(TAG, "Transport disconnected");
+        if (listeners.isEmpty()) {
+            mainHandler.postDelayed(idleCheckRunnable, IDLE_STOP_DELAY_MS);
+        }
         for (GinTransport.Listener l : listeners) {
             l.onDisconnected();
         }
@@ -88,7 +131,7 @@ public class GinConnectionManager implements GinTransport.Listener {
     @Override
     public void onDataReceived(byte[] data, byte type) {
         if (type == GinTransport.TYPE_CONTROL) {
-            String cmd = new String(data, java.nio.charset.StandardCharsets.UTF_8);
+            String cmd = new String(data, StandardCharsets.UTF_8);
             if (cmd.startsWith("SYNC_PRESETS:")) {
                 String[] parts = cmd.substring("SYNC_PRESETS:".length()).split("\\|");
                 if (parts.length >= 7) {

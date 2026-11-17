@@ -80,7 +80,7 @@ Using bigger models with high reasoning can be tempting, but there's not much va
 
 ### 1. Download and install
 
-Grab the APKs from the [GitHub Releases](https://github.com/Glass-Bar/Gin/releases) page, then install them onto their respective target devices.
+Grab the APKs from the [GitHub Releases](https://github.com/AtomicDig219303/Gin/releases) page, then install them onto their respective target devices.
 
 ### 2. Connect
 
@@ -88,3 +88,14 @@ Grab the APKs from the [GitHub Releases](https://github.com/Glass-Bar/Gin/releas
 2. Open the phone app, go to Settings, drop in your API keys, hit Save.
 3. Tap Start Server on the phone.
 4. Launch Gin on Glass.
+
+---
+
+## Fork Optimizations (Glass XE24 / Android 4.4.2 & Modern Android)
+
+- **Zero-Decode Hardware Camera Path on Glass:** Requests native `640x360` JPEG output from the OMAP4430 hardware ISP so photos can be sent directly over Bluetooth without software YUV/JPEG decoding and re-encoding on the CPU (with an `RGB_565` in-sample fallback if a driver ignores the size parameter).
+- **Bluetooth RFCOMM Power & Latency Improvements:** Prioritizes the last-connected companion phone and bonded devices with `BluetoothClass.Device.Major.PHONE` instead of sequentially probing non-phone Bluetooth accessories, wraps RFCOMM streams in `8 KB` `BufferedInputStream`/`BufferedOutputStream` buffers, fixes the `isRunning` reconnect deadlock, and automatically suspends background reconnect polling 15s after the Glass UI closes.
+- **Prism Display & Thermal Hygiene:** Eliminates fullscreen alpha-blended overdraw on the `640x360` HUD (`#000000` prism-off background), replaces 60Hz `setLayoutParams` layout passes during response scrolling with GPU-accelerated `setTranslationY`, and enforces a 60s request watchdog timeout with strict `FLAG_KEEP_SCREEN_ON` & `Slider.Indeterminate` cleanup.
+- **GDK Glassware UX Refinements:** Native `CardScrollView` lifecycle activation in `SettingsActivity`, human-readable touchpad menu titles with icons alongside `"ok glass"` contextual voice commands, native `Sounds.TAP` / `Sounds.SUCCESS` / `Sounds.DISMISSED` audio feedback, and direct Settings access from the main touchpad menu.
+- **Phone Companion Fixes & R8 Shrinking:** Fixed OpenAI/Custom direct WAV audio streaming (`input_audio` instead of `image_url`), automatic Gemini STT fallback for Anthropic audio queries, bounded log/bitmap memory in `MainActivity` and `ChatAdapter`, minimal runtime permissions (`BLUETOOTH_CONNECT` + `POST_NOTIFICATIONS`), and R8 code/resource shrinking reducing `Gin-Phone.apk` by ~63% (`4.97 MB` → `1.86 MB`) and `Gin-Glass.apk` to `41 KB`.
+
