@@ -89,6 +89,10 @@ public class MainActivity extends Activity
 
     private volatile boolean isRecording = false;
     private boolean isResumed = false;
+    private boolean isStreamingResponse = false;
+    private boolean ttsMutedForCurrentResponse = false;
+    private int ttsUtteranceCounter = 0;
+    private String lastQueuedUtteranceId = null;
     private int recordDurationSec = 0;
     private int currentDurationTier = 0; // index into DURATION_TIERS
     private String lastResponseText = "";
@@ -117,6 +121,7 @@ public class MainActivity extends Activity
     private final Runnable requestTimeoutRunnable = new Runnable() {
         @Override
         public void run() {
+            isStreamingResponse = false;
             hideSliders();
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             if (statusLayout.getVisibility() == View.VISIBLE) {
@@ -202,6 +207,7 @@ public class MainActivity extends Activity
                         return true;
                     }
                 } else if (gesture == Gesture.SWIPE_DOWN) {
+                    cancelActiveStreamIfAny();
                     audioManager.playSoundEffect(Sounds.DISMISSED);
                     finish();
                     return true;
@@ -224,7 +230,23 @@ public class MainActivity extends Activity
         handleIntent(intent);
     }
 
+    private void cancelActiveStreamIfAny() {
+        if (isStreamingResponse || mIndeterminateSlider != null) {
+            isStreamingResponse = false;
+            if (connectionManager != null && connectionManager.isConnected()) {
+                backgroundExecutor.execute(new Runnable() {
+                    @Override
+                    public void run() {
+                        connectionManager.sendData("CANCEL_STREAM".getBytes(StandardCharsets.UTF_8),
+                                GinTransport.TYPE_CONTROL);
+                    }
+                });
+            }
+        }
+    }
+
     private void handleIntent(Intent intent) {
+        cancelActiveStreamIfAny();
         stopTtsIfSpeaking();
         if (isRecording) {
             stopRecording(); // discard current recording
@@ -270,6 +292,7 @@ public class MainActivity extends Activity
     @Override
     protected void onPause() {
         isResumed = false;
+        isStreamingResponse = false;
         super.onPause();
         connectionManager.removeListener(this);
         if (isRecording) {
@@ -558,6 +581,7 @@ public class MainActivity extends Activity
 
     // Camera features
     private void capturePhoto() {
+        cancelActiveStreamIfAny();
         stopTtsIfSpeaking();
         if (isRecording) {
             stopRecording();
@@ -620,6 +644,7 @@ public class MainActivity extends Activity
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                isStreamingResponse = false;
                 cancelRequestTimeout();
                 hideSliders();
                 if (!isRecording) {
@@ -640,6 +665,8 @@ public class MainActivity extends Activity
                 if (type == GinTransport.TYPE_CONTROL) {
                     String cmd = new String(data, StandardCharsets.UTF_8);
                     if ("THINKING".equals(cmd)) {
+                        isStreamingResponse = false;
+                        ttsMutedForCurrentResponse = false;
                         statusText.setText("Thinking...");
                         setProviderIcon(statusIcon, getActiveProviderName());
 
@@ -657,33 +684,55 @@ public class MainActivity extends Activity
     }
 
     private void handleTextResponse(String jsonString) {
-        cancelRequestTimeout();
-        hideSliders();
-
         try {
             JSONObject obj = new JSONObject(jsonString);
             String provider = obj.optString("provider", "custom");
-            lastResponseText = obj.optString("text", "");
+            String text = obj.optString("text", "");
+            boolean hasDelta = obj.has("delta");
+            String delta = hasDelta ? obj.optString("delta", "") : text;
+            boolean done = obj.optBoolean("done", true);
 
-            statusLayout.setVisibility(View.GONE);
-            responseLayout.setVisibility(View.VISIBLE);
+            boolean isFirstChunk = !isStreamingResponse;
+            isStreamingResponse = !done;
 
-            responseText.setText(lastResponseText);
-            setProviderIcon(responseProviderIcon, provider);
-            audioManager.playSoundEffect(Sounds.SUCCESS);
+            if (isFirstChunk) {
+                ttsMutedForCurrentResponse = false;
+                hideSliders();
+                statusLayout.setVisibility(View.GONE);
+                responseLayout.setVisibility(View.VISIBLE);
+                setProviderIcon(responseProviderIcon, provider);
+                audioManager.playSoundEffect(Sounds.SUCCESS);
+                responseScroll.scrollTo(0, 0);
+            }
 
-            responseScroll.scrollTo(0, 0);
-            mainHandler.removeCallbacks(updateScrollbarRunnable);
-            mainHandler.postDelayed(updateScrollbarRunnable, 100);
+            if (!text.isEmpty()) {
+                lastResponseText = text;
+                responseText.setText(lastResponseText);
+                mainHandler.removeCallbacks(updateScrollbarRunnable);
+                mainHandler.postDelayed(updateScrollbarRunnable, 60);
+            }
 
-            if (isTtsReady && !lastResponseText.isEmpty()) {
-                speakResponse(lastResponseText);
+            if (!delta.isEmpty() && isTtsReady && !ttsMutedForCurrentResponse) {
+                enqueueTtsChunk(delta, isFirstChunk);
+            }
+
+            if (!done) {
+                // Keep watchdog active in case stream stalls mid-generation
+                startRequestTimeout();
+                getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             } else {
-                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                cancelRequestTimeout();
+                hideSliders();
+                if (!isTtsReady || ttsMutedForCurrentResponse || (delta.isEmpty() && (tts == null || !tts.isSpeaking()))) {
+                    getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                }
             }
 
         } catch (Exception e) {
             Log.e(TAG, "Error parsing text response", e);
+            isStreamingResponse = false;
+            cancelRequestTimeout();
+            hideSliders();
             statusLayout.setVisibility(View.GONE);
             responseLayout.setVisibility(View.VISIBLE);
             responseText.setText(jsonString);
@@ -740,23 +789,33 @@ public class MainActivity extends Activity
         scrollbarThumb.setTranslationY(progress * maxThumbTranslate);
     }
 
-    private void speakResponse(String text) {
-        if (!isTtsReady || text.isEmpty()) {
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    private void enqueueTtsChunk(String text, boolean flush) {
+        if (!isTtsReady || text == null || text.isEmpty()) {
+            if (!isStreamingResponse) {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
             return;
         }
+        ttsUtteranceCounter++;
+        String utteranceId = "gin_tts_" + ttsUtteranceCounter;
+        lastQueuedUtteranceId = utteranceId;
+
         HashMap<String, String> params = new HashMap<>();
-        params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, "gin_tts_utterance");
-        int res = tts.speak(text, TextToSpeech.QUEUE_FLUSH, params);
-        if (res == TextToSpeech.ERROR) {
+        params.put(TextToSpeech.Engine.KEY_PARAM_UTTERANCE_ID, utteranceId);
+        int queueMode = flush ? TextToSpeech.QUEUE_FLUSH : TextToSpeech.QUEUE_ADD;
+        int res = tts.speak(text, queueMode, params);
+        if (res == TextToSpeech.ERROR && !isStreamingResponse) {
             getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
     }
 
     private void stopTtsIfSpeaking() {
+        ttsMutedForCurrentResponse = true;
         if (tts != null && isTtsReady && tts.isSpeaking()) {
             tts.stop();
-            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            if (!isStreamingResponse) {
+                getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
         }
     }
 
@@ -790,13 +849,16 @@ public class MainActivity extends Activity
             }
 
             @Override
-            public void onDone(String utteranceId) {
+            public void onDone(final String utteranceId) {
                 runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
                         if (isFinishing() || isDestroyed())
                             return;
-                        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        if (!isStreamingResponse
+                                && (lastQueuedUtteranceId == null || lastQueuedUtteranceId.equals(utteranceId))) {
+                            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        }
                     }
                 });
             }
@@ -808,7 +870,9 @@ public class MainActivity extends Activity
                     public void run() {
                         if (isFinishing() || isDestroyed())
                             return;
-                        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        if (!isStreamingResponse) {
+                            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                        }
                     }
                 });
             }
@@ -822,6 +886,7 @@ public class MainActivity extends Activity
             public void run() {
                 if (isFinishing() || isDestroyed())
                     return;
+                isStreamingResponse = false;
                 cancelRequestTimeout();
                 hideSliders();
                 statusLayout.setVisibility(View.VISIBLE);
@@ -884,6 +949,7 @@ public class MainActivity extends Activity
                 startActivity(new Intent(this, SettingsActivity.class));
                 return true;
             } else if (itemId == R.id.menu_stop) {
+                cancelActiveStreamIfAny();
                 audioManager.playSoundEffect(Sounds.DISMISSED);
                 finish();
                 return true;

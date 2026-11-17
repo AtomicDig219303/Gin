@@ -123,6 +123,7 @@ public class GinServerManager implements GinTransport.Listener {
     public synchronized void stopServer() {
         isRunning = false;
         isConnected = false;
+        llmClient.cancelActiveCall();
         addLog("Stopping server...");
         if (serverTransport != null) {
             serverTransport.stop();
@@ -205,6 +206,7 @@ public class GinServerManager implements GinTransport.Listener {
     @Override
     public void onDisconnected() {
         isConnected = false;
+        llmClient.cancelActiveCall();
         addLog("Glass client disconnected");
         notifyState();
     }
@@ -239,6 +241,9 @@ public class GinServerManager implements GinTransport.Listener {
             boolean mode = Boolean.parseBoolean(cmd.substring("SET_CHAT_MODE:".length()).trim());
             addLog("Glass requested chat mode: " + mode);
             setChatMode(mode);
+        } else if ("CANCEL_STREAM".equals(cmd)) {
+            llmClient.cancelActiveCall();
+            addLog("Canceled active LLM stream");
         }
     }
 
@@ -263,27 +268,122 @@ public class GinServerManager implements GinTransport.Listener {
         return "";
     }
 
-    private void handleLlmResponse(ChatSession targetSession, String provider, String responseText) {
-        addLog("Raw LLM response: " + responseText);
-
-        // Strip out <thinking> tags using precompiled Pattern before sending back to Glass
-        String cleanText = THINKING_PATTERN.matcher(responseText).replaceAll("").trim();
-        // Handle unclosed thinking tag (model was cut off)
-        int unclosedStart = cleanText.indexOf("<thinking>");
+    private static String extractCleanText(String rawText, boolean isFinal) {
+        if (rawText == null || rawText.isEmpty()) {
+            return "";
+        }
+        // 1. Strip completed <thinking>...</thinking> blocks
+        String clean = THINKING_PATTERN.matcher(rawText).replaceAll("");
+        // 2. Strip any unclosed <thinking> block
+        int unclosedStart = clean.indexOf("<thinking>");
         if (unclosedStart != -1) {
-            cleanText = cleanText.substring(0, unclosedStart).trim();
+            clean = clean.substring(0, unclosedStart);
         }
-
-        // Ensure there is something to say
-        if (cleanText.isEmpty()) {
-            cleanText = "(Thinking complete, but no answer provided)";
+        // 3. While streaming, hold back any trailing partial "<thinking>" tag prefix
+        if (!isFinal) {
+            final String tag = "<thinking>";
+            for (int len = tag.length() - 1; len >= 1; len--) {
+                if (clean.endsWith(tag.substring(0, len))) {
+                    clean = clean.substring(0, clean.length() - len);
+                    break;
+                }
+            }
         }
+        // Strip leading whitespace so emitted offsets stay stable
+        int start = 0;
+        while (start < clean.length() && Character.isWhitespace(clean.charAt(start))) {
+            start++;
+        }
+        return isFinal ? clean.substring(start).trim() : clean.substring(start);
+    }
 
-        // Free media bytes from user message and append assistant response
-        targetSession.clearMediaFromHistory();
-        targetSession.addMessage(new ChatMessage(ChatMessage.Role.ASSISTANT, cleanText));
+    private static int findSentenceSplitEnd(String unemitted) {
+        int len = unemitted.length();
+        if (len < 20) {
+            return -1;
+        }
+        int lastSentenceBoundary = -1;
+        for (int i = 18; i < len; i++) {
+            char c = unemitted.charAt(i);
+            if (c == '\n') {
+                lastSentenceBoundary = i + 1;
+            } else if ((c == '.' || c == '!' || c == '?') && i + 1 < len
+                    && Character.isWhitespace(unemitted.charAt(i + 1))) {
+                lastSentenceBoundary = i + 1;
+            }
+        }
+        if (lastSentenceBoundary != -1) {
+            return lastSentenceBoundary;
+        }
+        // If a long run-on clause exceeds 110 chars without sentence punctuation, split at a clause delimiter
+        if (len >= 110) {
+            for (int i = len - 2; i >= 40; i--) {
+                char c = unemitted.charAt(i);
+                if ((c == ',' || c == ';' || c == ':') && Character.isWhitespace(unemitted.charAt(i + 1))) {
+                    return i + 1;
+                }
+            }
+        }
+        return -1;
+    }
 
-        sendTextResponse(provider, cleanText);
+    private void startStreamingLlmQuery(final ChatSession targetSession, final ChatMessage userMsg,
+                                        final String provider, String apiKey, String modelName,
+                                        String customUrl, String systemPrompt, List<ChatMessage> snapshot) {
+        final StringBuilder rawBuilder = new StringBuilder();
+        final int[] emittedLength = { 0 };
+
+        llmClient.streamLlm(provider, apiKey, modelName, customUrl, systemPrompt, snapshot,
+                new LlmClient.StreamCallback() {
+                    @Override
+                    public void onDelta(String textDelta) {
+                        rawBuilder.append(textDelta);
+                        String cleanNow = extractCleanText(rawBuilder.toString(), false);
+                        if (cleanNow.length() <= emittedLength[0]) {
+                            return;
+                        }
+                        String unemitted = cleanNow.substring(emittedLength[0]);
+                        int splitEnd = findSentenceSplitEnd(unemitted);
+                        if (splitEnd > 0) {
+                            String sentenceDelta = unemitted.substring(0, splitEnd).trim();
+                            emittedLength[0] += splitEnd;
+                            String cumulativeClean = cleanNow.substring(0, emittedLength[0]).trim();
+                            if (!sentenceDelta.isEmpty()) {
+                                sendStreamingTextResponse(provider, cumulativeClean, sentenceDelta, false);
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onComplete(String fullText) {
+                        String rawFinal = fullText != null && !fullText.isEmpty() ? fullText : rawBuilder.toString();
+                        String cleanText = extractCleanText(rawFinal, true);
+                        String remainingDelta;
+                        if (cleanText.isEmpty()) {
+                            cleanText = "(Thinking complete, but no answer provided)";
+                            remainingDelta = cleanText;
+                        } else if (emittedLength[0] < cleanText.length()) {
+                            remainingDelta = cleanText.substring(emittedLength[0]).trim();
+                        } else {
+                            remainingDelta = "";
+                        }
+
+                        addLog("LLM response (" + provider + "): " + cleanText);
+                        targetSession.clearMediaFromHistory();
+                        targetSession.addMessage(new ChatMessage(ChatMessage.Role.ASSISTANT, cleanText));
+
+                        sendStreamingTextResponse(provider, cleanText, remainingDelta, true);
+                    }
+
+                    @Override
+                    public void onFailure(String errorMessage) {
+                        targetSession.removeMessage(userMsg);
+                        targetSession.clearMediaFromHistory();
+                        addLog("LLM Query failed: " + errorMessage);
+                        String errText = "Query failed: " + errorMessage;
+                        sendStreamingTextResponse(provider, errText, errText, true);
+                    }
+                });
     }
 
     private void handleImageQuery(byte[] imageBytes) {
@@ -309,22 +409,9 @@ public class GinServerManager implements GinTransport.Listener {
         String apiKey = getApiKeyForProvider(provider);
         String customUrl = prefs.getString("custom_url", "");
 
-        addLog("Querying LLM (" + provider + ") with captured photo...");
-        llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(activeIndex), snapshot,
-                new LlmClient.Callback() {
-                    @Override
-                    public void onSuccess(String responseText) {
-                        handleLlmResponse(targetSession, provider, responseText);
-                    }
-
-                    @Override
-                    public void onFailure(String errorMessage) {
-                        targetSession.removeMessage(msg);
-                        targetSession.clearMediaFromHistory();
-                        addLog("LLM Query failed: " + errorMessage);
-                        sendTextResponse(provider, "Query failed: " + errorMessage);
-                    }
-                });
+        addLog("Streaming LLM (" + provider + ") with captured photo...");
+        startStreamingLlmQuery(targetSession, msg, provider, apiKey, modelName, customUrl,
+                getSystemPrompt(activeIndex), snapshot);
         // Clear raw media bytes from session after request payload is built
         targetSession.clearMediaFromHistory();
     }
@@ -350,35 +437,23 @@ public class GinServerManager implements GinTransport.Listener {
                 && !GinConstants.PROVIDER_ANTHROPIC.equalsIgnoreCase(provider);
 
         if (audioSupported) {
-            addLog(provider + " selected, sending WAV audio directly to multimodal API...");
+            addLog(provider + " selected, streaming WAV audio directly to multimodal API...");
             final ChatMessage msg = new ChatMessage(
                     ChatMessage.Role.USER, "Please answer this voice query", audioBytes,
                     GinConstants.MIME_TYPE_WAV);
             targetSession.addMessage(msg);
             List<ChatMessage> snapshot = targetSession.getMessages();
 
-            llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(activeIndex), snapshot,
-                    new LlmClient.Callback() {
-                        @Override
-                        public void onSuccess(String responseText) {
-                            handleLlmResponse(targetSession, provider, responseText);
-                        }
-
-                        @Override
-                        public void onFailure(String errorMessage) {
-                            targetSession.removeMessage(msg);
-                            targetSession.clearMediaFromHistory();
-                            addLog(provider + " Audio query failed: " + errorMessage);
-                            sendTextResponse(provider, "Query failed: " + errorMessage);
-                        }
-                    });
+            startStreamingLlmQuery(targetSession, msg, provider, apiKey, modelName, customUrl,
+                    getSystemPrompt(activeIndex), snapshot);
             targetSession.clearMediaFromHistory();
         } else {
             addLog("Transcribing WAV audio using gemini-3.1-flash-lite...");
             String geminiApiKey = getApiKeyForProvider(GinConstants.PROVIDER_GEMINI);
             if (geminiApiKey.trim().isEmpty()) {
                 addLog("Transcription failed: Gemini API Key is missing.");
-                sendTextResponse(provider, "Error: Please set a Gemini API Key in the Phone Settings to enable cloud transcription for " + provider + ".");
+                String errText = "Error: Please set a Gemini API Key in the Phone Settings to enable cloud transcription for " + provider + ".";
+                sendStreamingTextResponse(provider, errText, errText, true);
                 return;
             }
 
@@ -389,45 +464,38 @@ public class GinServerManager implements GinTransport.Listener {
                     final ChatMessage msg = new ChatMessage(ChatMessage.Role.USER, transcribedText);
                     targetSession.addMessage(msg);
 
-                    addLog("Querying LLM (" + provider + ") with query text...");
-                    llmClient.queryLlm(provider, apiKey, modelName, customUrl, getSystemPrompt(activeIndex),
-                            targetSession.getMessages(), new LlmClient.Callback() {
-                                @Override
-                                public void onSuccess(String responseText) {
-                                    handleLlmResponse(targetSession, provider, responseText);
-                                }
-
-                                @Override
-                                public void onFailure(String errorMessage) {
-                                    targetSession.removeMessage(msg);
-                                    addLog("LLM Query failed: " + errorMessage);
-                                    sendTextResponse(provider, "Query failed: " + errorMessage);
-                                }
-                            });
+                    addLog("Streaming LLM (" + provider + ") with query text...");
+                    startStreamingLlmQuery(targetSession, msg, provider, apiKey, modelName, customUrl,
+                            getSystemPrompt(activeIndex), targetSession.getMessages());
                 }
 
                 @Override
                 public void onFailure(String errorMessage) {
                     addLog("Cloud transcription failed: " + errorMessage);
-                    sendTextResponse(provider, "Transcription failed: " + errorMessage);
+                    String errText = "Transcription failed: " + errorMessage;
+                    sendStreamingTextResponse(provider, errText, errText, true);
                 }
             });
         }
     }
 
-    private void sendTextResponse(String provider, String text) {
+    private void sendStreamingTextResponse(String provider, String text, String delta, boolean done) {
         try {
             JSONObject response = new JSONObject();
             response.put("provider", provider);
             response.put("text", text);
+            response.put("delta", delta);
+            response.put("done", done);
 
             byte[] payload = response.toString().getBytes(StandardCharsets.UTF_8);
             if (serverTransport != null && isConnected) {
                 serverTransport.sendData(payload, GinTransport.TYPE_TEXT);
-                addLog("Sent response back to Glass client (" + payload.length + " bytes)");
+                if (done) {
+                    addLog("Completed streaming response to Glass (" + text.length() + " chars)");
+                }
             }
         } catch (Exception e) {
-            Log.e(TAG, "Failed to send response", e);
+            Log.e(TAG, "Failed to send streaming response", e);
             addLog("Error sending response: " + e.getMessage());
         }
     }
